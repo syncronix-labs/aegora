@@ -1,5 +1,8 @@
 APP_NAME=aegora
 
+.PHONY: verify
+verify: fmt tidy lint test build
+
 .PHONY: all
 all: fmt lint test build
 
