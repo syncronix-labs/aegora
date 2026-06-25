@@ -1,0 +1,20 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - revive
+    - misspell
+    - unused
+    - bodyclose
+    - gocritic
+    - unconvert
+
+issues:
+  exclude-use-default: false
