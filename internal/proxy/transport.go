@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+// NewTransport creates the default HTTP transport used
+// by the reverse proxy.
 func NewTransport() *http.Transport {
 	return &http.Transport{
 		MaxIdleConns:          100,

@@ -10,7 +10,7 @@ func TestProxyForwardsRequest(t *testing.T) {
 	backend := httptest.NewServer(
 		http.HandlerFunc(func(
 			w http.ResponseWriter,
-			r *http.Request,
+			_ *http.Request,
 		) {
 			w.WriteHeader(http.StatusOK)
 		}),
@@ -51,7 +51,6 @@ func TestProxyInjectsHeader(t *testing.T) {
 			r *http.Request,
 		) {
 			header = r.Header.Get("X-Aegora")
-
 			w.WriteHeader(http.StatusOK)
 		}),
 	)

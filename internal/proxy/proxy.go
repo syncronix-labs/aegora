@@ -6,10 +6,13 @@ import (
 	"net/url"
 )
 
+// ReverseProxy wraps httputil.ReverseProxy and provides
+// Aegora-specific request handling behavior.
 type ReverseProxy struct {
 	proxy *httputil.ReverseProxy
 }
 
+// New creates a reverse proxy for the specified target URL.
 func New(target string) (*ReverseProxy, error) {
 	targetURL, err := url.Parse(target)
 	if err != nil {
