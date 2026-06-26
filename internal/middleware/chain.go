@@ -1,3 +1,5 @@
+// Package middleware provides the middleware abstraction and execution
+// pipeline used by Aegora to process HTTP requests.
 package middleware
 
 import "net/http"
