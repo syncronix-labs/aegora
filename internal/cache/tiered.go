@@ -116,6 +116,7 @@ func (t *TieredCache) Get(key string) (*Entry, bool) {
 		Status:    entry.Status,
 		Header:    entry.Header.Clone(),
 		Body:      bytes.Clone(entry.Body),
+		StoredAt:  entry.StoredAt,
 		ExpiresAt: time.Now().Add(t.l1TTL),
 		ETag:      entry.ETag,
 	}
@@ -144,6 +145,7 @@ func (t *TieredCache) Put(key string, e *Entry) {
 		Status:    e.Status,
 		Header:    e.Header.Clone(),
 		Body:      bytes.Clone(e.Body),
+		StoredAt:  e.StoredAt,
 		ExpiresAt: time.Now().Add(t.l1TTL),
 		ETag:      e.ETag,
 	}
@@ -158,6 +160,7 @@ func (t *TieredCache) Put(key string, e *Entry) {
 		Status:    e.Status,
 		Header:    e.Header.Clone(),
 		Body:      bytes.Clone(e.Body),
+		StoredAt:  e.StoredAt,
 		ExpiresAt: time.Now().Add(t.l2TTL),
 		ETag:      e.ETag,
 	}

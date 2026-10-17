@@ -35,6 +35,7 @@ func TestTieredCache_L1MissL2HitBackfillsL1(t *testing.T) {
 
 	const key = "GET /api/user?id=1"
 	origEntry := newSampleEntry(`{"user":"alice"}`, time.Now().Add(5*time.Minute))
+	origEntry.StoredAt = time.Now().Add(-10 * time.Second)
 
 	// Directly populate L2 without populating L1 to establish an L1 miss state
 	var buf bytes.Buffer
@@ -61,6 +62,9 @@ func TestTieredCache_L1MissL2HitBackfillsL1(t *testing.T) {
 	}
 	if entry1.Header.Get("X-Custom") != "tiered" {
 		t.Fatalf("expected header X-Custom tiered, got %q", entry1.Header.Get("X-Custom"))
+	}
+	if !entry1.StoredAt.Equal(origEntry.StoredAt) {
+		t.Fatalf("L2 backfill reset stored timestamp: %v, want %v", entry1.StoredAt, origEntry.StoredAt)
 	}
 
 	// Flush L2 completely to prove the next lookup is served by backfilled L1
@@ -89,6 +93,7 @@ func TestTieredCache_WriteThrough(t *testing.T) {
 
 	const key = "GET /api/items"
 	entry := newSampleEntry(`[{"id":1},{"id":2}]`, time.Now().Add(30*time.Second))
+	entry.StoredAt = time.Now().Add(-10 * time.Second)
 
 	tc.Put(key, entry)
 
@@ -99,6 +104,9 @@ func TestTieredCache_WriteThrough(t *testing.T) {
 	}
 	if string(l1Entry.Body) != `[{"id":1},{"id":2}]` {
 		t.Fatalf("expected L1 body match, got %q", string(l1Entry.Body))
+	}
+	if !l1Entry.StoredAt.Equal(entry.StoredAt) {
+		t.Fatalf("L1 write reset stored timestamp: %v, want %v", l1Entry.StoredAt, entry.StoredAt)
 	}
 
 	// Verify miniredis contains the namespaced key

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ type Entry struct {
 	Status    int
 	Header    http.Header
 	Body      []byte
+	StoredAt  time.Time
 	ExpiresAt time.Time
 	ETag      string
 }
@@ -230,6 +232,10 @@ func Middleware(store Store, ttl time.Duration, maxBodyBytes int) middleware.Mid
 
 			// Attempt cache hit
 			if entry, hit := store.Get(cacheKey); hit {
+				age := int64(0)
+				if !entry.StoredAt.IsZero() {
+					age = max(0, int64(time.Since(entry.StoredAt)/time.Second))
+				}
 				// Evaluate If-None-Match conditional request
 				ifNoneMatch := r.Header.Get("If-None-Match")
 				if entry.ETag != "" && ifNoneMatch != "" && etagMatches(ifNoneMatch, entry.ETag) {
@@ -239,6 +245,7 @@ func Middleware(store Store, ttl time.Duration, maxBodyBytes int) middleware.Mid
 						}
 					}
 					w.Header().Set("X-Cache", "HIT")
+					w.Header().Set("Age", strconv.FormatInt(age, 10))
 					w.WriteHeader(http.StatusNotModified)
 					return
 				}
@@ -250,6 +257,7 @@ func Middleware(store Store, ttl time.Duration, maxBodyBytes int) middleware.Mid
 					}
 				}
 				w.Header().Set("X-Cache", "HIT")
+				w.Header().Set("Age", strconv.FormatInt(age, 10))
 				w.WriteHeader(entry.Status)
 				if r.Method != http.MethodHead {
 					_, _ = w.Write(entry.Body)
@@ -291,11 +299,13 @@ func Middleware(store Store, ttl time.Duration, maxBodyBytes int) middleware.Mid
 					rw.header.Set("ETag", etag)
 				}
 
+				now := time.Now()
 				entry := &Entry{
 					Status:    rw.status,
 					Header:    rw.header.Clone(),
 					Body:      bytes.Clone(bodyBytes),
-					ExpiresAt: time.Now().Add(ttl),
+					StoredAt:  now,
+					ExpiresAt: now.Add(ttl),
 					ETag:      etag,
 				}
 				store.Put(cacheKey, entry)
