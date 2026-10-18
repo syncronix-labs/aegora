@@ -8,6 +8,10 @@ Go Layer 7 reliability gateway.
 
 Aegora is an HTTP/1.1 reverse proxy and reliability gateway built in Go. It protects upstream services from overload, cascading failures, latency spikes, and traffic surges through defensive middleware, multi-tier caching, dynamic queueing, adaptive load shedding, and observability.
 
+![Config hot reload demo](assets/demo-hot-reload.gif)
+*Live config reload: the rate limit tightens from 60 to 3 requests per
+minute on a running gateway. 200 200 200 429 429, zero restarts.*
+
 ---
 
 ## Features
