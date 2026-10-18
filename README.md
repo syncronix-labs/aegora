@@ -4,13 +4,40 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/syncronix-labs/aegora)](https://github.com/syncronix-labs/aegora/blob/main/go.mod)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Go Layer 7 reliability gateway.
+Go Layer 7 reliability gateway: adaptive rate limiting, circuit breaking,
+multi-tier caching, and AIMD load shedding for upstream services.
 
 Aegora is an HTTP/1.1 reverse proxy and reliability gateway built in Go. It protects upstream services from overload, cascading failures, latency spikes, and traffic surges through defensive middleware, multi-tier caching, dynamic queueing, adaptive load shedding, and observability.
 
 ![Config hot reload demo](assets/demo-hot-reload.gif)
 *Live config reload: the rate limit tightens from 60 to 3 requests per
 minute on a running gateway. 200 200 200 429 429, zero restarts.*
+
+## Why Aegora?
+
+Every backend dies the same way: a traffic surge or one slow
+dependency turns into a retry storm, and static limits tuned last
+quarter don't save you. Envoy has answers, but you have to operate
+Envoy. Aegora packs the overload story into a single Go binary.
+
+- Load shedding that watches latency, not a config file. An AIMD
+  controller tracks P99 and throttles lower-priority traffic before
+  the backend tips over. No hand-tuned thresholds to revisit after
+  every incident.
+- Priorities are first-class citizens. Multi-level admission
+  queues with CoDel active queue management, so one chatty endpoint
+  can't starve the rest. Most lightweight gateways are still plain
+  FIFO.
+- One pipeline, one YAML, one binary. Shedding, rate limiting,
+  multi-tier caching, queueing, circuit breaking, retries, Prometheus
+  metrics, OpenTelemetry tracing: a single ordered request chain, no
+  sidecars, no control plane.
+- Hot reload with zero dropped connections. Config applies
+  atomically through the admin API. The GIF above is the proof, not
+  a claim.
+- Benchmarked, not hand-waved. Cache hits in ~270ns, the
+  sliding-window limiter at 0 allocs/op under contention. Numbers
+  are in the Benchmarks section below.
 
 ---
 
