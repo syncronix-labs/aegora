@@ -28,7 +28,7 @@ jobs:
           files=$(gofmt -l .)
           if [ -n "$files" ]; then echo "Unformatted files:"; echo "$files"; exit 1; fi
 
-      - uses: golangci/golangci-lint-action@v8
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
           args: --timeout=5m
