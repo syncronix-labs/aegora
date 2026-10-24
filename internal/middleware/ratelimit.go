@@ -209,3 +209,39 @@ func RateLimit(newLimiter func() ratelimit.Limiter, keyFn KeyFunc, skipPaths []s
 	rl := newRateLimiter(newLimiter, keyFn, skipPaths)
 	return rl.Middleware()
 }
+
+// RouteRateLimit returns a middleware that applies a different rate limit middleware
+// depending on which route a request matches.
+//
+// match returns the name of the route the request matches, or "" if none. Requests whose
+// route has an entry in byRoute use that entry; a nil entry disables rate limiting for the
+// route. All other requests (routes without an entry, or no matching route) use fallback;
+// a nil fallback lets them through unlimited.
+//
+// Every middleware is wrapped around next once, at construction time, so each route keeps
+// its own independent per-key buckets for the lifetime of the chain.
+func RouteRateLimit(match func(*http.Request) string, byRoute map[string]Middleware, fallback Middleware) Middleware {
+	return func(next http.Handler) http.Handler {
+		routeHandlers := make(map[string]http.Handler, len(byRoute))
+		for name, mw := range byRoute {
+			if mw == nil {
+				routeHandlers[name] = next
+				continue
+			}
+			routeHandlers[name] = mw(next)
+		}
+
+		fallbackHandler := next
+		if fallback != nil {
+			fallbackHandler = fallback(next)
+		}
+
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if h, ok := routeHandlers[match(r)]; ok {
+				h.ServeHTTP(w, r)
+				return
+			}
+			fallbackHandler.ServeHTTP(w, r)
+		})
+	}
+}

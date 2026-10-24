@@ -1396,3 +1396,209 @@ func TestValidate_Admin(t *testing.T) {
 		})
 	}
 }
+
+func ptr[T any](v T) *T { return &v }
+
+func TestEffectiveRateLimit(t *testing.T) {
+	global := config.RateLimitConfig{
+		Enabled:     true,
+		Limiter:     "sliding_window",
+		MaxRequests: 120,
+		Window:      config.Duration(time.Minute),
+		Key:         "ip",
+	}
+
+	tests := []struct {
+		name     string
+		override *config.RouteRateLimitConfig
+		want     config.RateLimitConfig
+	}{
+		{
+			name:     "no override inherits global",
+			override: nil,
+			want:     global,
+		},
+		{
+			name:     "empty override inherits global",
+			override: &config.RouteRateLimitConfig{},
+			want:     global,
+		},
+		{
+			name:     "partial override replaces only set fields",
+			override: &config.RouteRateLimitConfig{MaxRequests: ptr(5)},
+			want: config.RateLimitConfig{
+				Enabled: true, Limiter: "sliding_window", MaxRequests: 5,
+				Window: config.Duration(time.Minute), Key: "ip",
+			},
+		},
+		{
+			name: "switch limiter and key",
+			override: &config.RouteRateLimitConfig{
+				Limiter: ptr("token_bucket"), RefillPerSecond: ptr(2.5), Key: ptr("api_key"),
+			},
+			want: config.RateLimitConfig{
+				Enabled: true, Limiter: "token_bucket", MaxRequests: 120,
+				Window: config.Duration(time.Minute), RefillPerSecond: 2.5, Key: "api_key",
+			},
+		},
+		{
+			name:     "explicit enabled false disables route",
+			override: &config.RouteRateLimitConfig{Enabled: ptr(false)},
+			want: config.RateLimitConfig{
+				Enabled: false, Limiter: "sliding_window", MaxRequests: 120,
+				Window: config.Duration(time.Minute), Key: "ip",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{RateLimit: global}
+			got := cfg.EffectiveRateLimit(config.RouteConfig{Name: "r", RateLimit: tt.override})
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("EffectiveRateLimit() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRouteConfig_HasRateLimitOverride(t *testing.T) {
+	if (config.RouteConfig{}).HasRateLimitOverride() {
+		t.Error("nil override reported as override")
+	}
+	if (config.RouteConfig{RateLimit: &config.RouteRateLimitConfig{}}).HasRateLimitOverride() {
+		t.Error("empty override reported as override")
+	}
+	if !(config.RouteConfig{RateLimit: &config.RouteRateLimitConfig{MaxRequests: ptr(1)}}).HasRateLimitOverride() {
+		t.Error("non-empty override not reported")
+	}
+}
+
+func TestValidate_RouteRateLimitOverride(t *testing.T) {
+	tests := []struct {
+		name        string
+		global      config.RateLimitConfig
+		override    *config.RouteRateLimitConfig
+		wantErrText string
+	}{
+		{
+			name: "valid partial override",
+			global: config.RateLimitConfig{
+				Enabled: true, Limiter: "sliding_window", MaxRequests: 120,
+				Window: config.Duration(time.Minute), Key: "ip",
+			},
+			override: &config.RouteRateLimitConfig{MaxRequests: ptr(5)},
+		},
+		{
+			name: "zero max_requests names the route",
+			global: config.RateLimitConfig{
+				Enabled: true, Limiter: "sliding_window", MaxRequests: 120,
+				Window: config.Duration(time.Minute), Key: "ip",
+			},
+			override:    &config.RouteRateLimitConfig{MaxRequests: ptr(0)},
+			wantErrText: "routes[0].rate_limit.max_requests",
+		},
+		{
+			name: "switch to token_bucket without refill rate",
+			global: config.RateLimitConfig{
+				Enabled: true, Limiter: "sliding_window", MaxRequests: 120,
+				Window: config.Duration(time.Minute), Key: "ip",
+			},
+			override:    &config.RouteRateLimitConfig{Limiter: ptr("token_bucket")},
+			wantErrText: "routes[0].rate_limit.refill_per_second",
+		},
+		{
+			name:        "route enables limiting while global is off and fields are missing",
+			global:      config.RateLimitConfig{Enabled: false},
+			override:    &config.RouteRateLimitConfig{Enabled: ptr(true), MaxRequests: ptr(5)},
+			wantErrText: "routes[0].rate_limit.limiter",
+		},
+		{
+			name:   "route enables limiting while global is off with all fields",
+			global: config.RateLimitConfig{Enabled: false},
+			override: &config.RouteRateLimitConfig{
+				Enabled: ptr(true), Limiter: ptr("sliding_window"), MaxRequests: ptr(5),
+				Window: ptr(config.Duration(time.Minute)), Key: ptr("ip"),
+			},
+		},
+		{
+			name:        "invalid route override ignored when route disabled",
+			global:      config.RateLimitConfig{Enabled: false},
+			override:    &config.RouteRateLimitConfig{Enabled: ptr(false), Limiter: ptr("bogus")},
+			wantErrText: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := parseValidFixture(t)
+			cfg.RateLimit = tt.global
+			cfg.Routes[0].RateLimit = tt.override
+
+			err := cfg.Validate()
+			if tt.wantErrText == "" {
+				if err != nil {
+					t.Fatalf("expected valid config, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErrText) {
+				t.Fatalf("error = %v, want it to contain %q", err, tt.wantErrText)
+			}
+		})
+	}
+}
+
+func TestLoad_RouteRateLimitOverrideYAML(t *testing.T) {
+	path := t.TempDir() + "/aegora.yaml"
+	data := `
+server:
+  addr: "127.0.0.1:8080"
+  read_timeout: "15s"
+  write_timeout: "30s"
+  idle_timeout: "60s"
+routes:
+  - name: "login"
+    path_prefix: "/login"
+    targets: ["http://127.0.0.1:8081"]
+    rate_limit:
+      max_requests: 5
+      window: "10s"
+  - name: "internal"
+    path_prefix: "/internal"
+    targets: ["http://127.0.0.1:8081"]
+    rate_limit:
+      enabled: false
+  - name: "api"
+    path_prefix: "/"
+    targets: ["http://127.0.0.1:8081"]
+observability:
+  log_level: "info"
+  metrics_addr: "127.0.0.1:9090"
+rate_limit:
+  enabled: true
+  limiter: "sliding_window"
+  max_requests: 120
+  window: "1m"
+  key: "ip"
+`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("config.Load() unexpected error: %v", err)
+	}
+
+	login := cfg.EffectiveRateLimit(cfg.Routes[0])
+	if !login.Enabled || login.MaxRequests != 5 || login.Window != config.Duration(10*time.Second) || login.Key != "ip" {
+		t.Fatalf("login effective rate limit = %+v, want enabled, 5 per 10s, key ip", login)
+	}
+	if internal := cfg.EffectiveRateLimit(cfg.Routes[1]); internal.Enabled {
+		t.Fatalf("internal route should be disabled, got %+v", internal)
+	}
+	if cfg.Routes[2].HasRateLimitOverride() {
+		t.Fatal("api route should have no override")
+	}
+}

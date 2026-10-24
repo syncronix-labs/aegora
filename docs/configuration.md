@@ -69,6 +69,7 @@ An array of route definitions. At least one route is required.
 | `targets` | []string | none (required) | Yes | List of upstream target base URLs (for example, `["http://backend-1:8081", "http://backend-2:8082"]`). Must be valid URLs with scheme and host. |
 | `strip_prefix` | string | `""` | Yes | Optional path prefix to remove before forwarding to upstreams. If specified, must start with `"/"`. |
 | `lb` | string | `"round_robin"` | Yes | Load balancing policy across targets: `"round_robin"` or `"least_connections"`. |
+| `rate_limit` | object | none (inherits global) | Yes | Optional per-route override of the global `rate_limit` block. See [Per-Route Overrides](#per-route-overrides). |
 
 ---
 
@@ -84,6 +85,43 @@ Protects backends against abusive clients and sudden volume spikes.
 | `window` | Duration | none (required for sliding_window) | Yes | Moving time window duration (for example, `"1m"`). Must be positive. |
 | `refill_per_second` | float64 | none (required for token_bucket) | Yes | Token refill rate per second for token bucket limiters. Must be positive. |
 | `key` | string | `"ip"` | Yes | Partition key for rate limit buckets: `"ip"` (client remote IP) or `"api_key"` (`X-API-Key` or `Authorization` header). |
+
+### Per-Route Overrides
+
+Any route can define its own `rate_limit` block with the same fields as the global block. Only the fields you set override the global values; every other field is inherited.
+
+```yaml
+rate_limit:              # global: generous default for every route
+  enabled: true
+  limiter: "sliding_window"
+  max_requests: 600
+  window: "1m"
+  key: "ip"
+
+routes:
+  - name: "login"
+    path_prefix: "/login"
+    targets: ["http://auth:8080"]
+    rate_limit:          # strict: inherits limiter and key, overrides the rest
+      max_requests: 5
+      window: "1m"
+  - name: "internal"
+    path_prefix: "/internal"
+    targets: ["http://ops:8080"]
+    rate_limit:
+      enabled: false     # opt this route out of rate limiting
+  - name: "api"
+    path_prefix: "/"
+    targets: ["http://api:8080"]   # no override: uses the global limit
+```
+
+Override semantics:
+- **Merge**: fields set in the route block replace the global value; omitted fields are inherited. An empty block (`rate_limit: {}`) is treated as no override.
+- **Validation**: the merged result is validated with the same rules as the global block, and errors name the route (for example, `config: routes[0].rate_limit.max_requests: must be positive, got 0`).
+- **Enable and disable**: `enabled: false` turns limiting off for that route even if the global block is enabled. `enabled: true` turns it on for that route even if the global block is disabled, in which case the remaining required fields must come from the override or the global block.
+- **Separate buckets**: each route with an override counts requests in its own buckets, so requests to it do not consume the global allowance (and vice versa). A client can therefore use the global limit and each overriding route's limit independently. Routes without an override, and requests that match no route, share the global buckets.
+- **Route matching**: the override applies to the route the gateway actually matches. Matching is done on the percent-encoded path, so a request such as `/%6Cogin` does not match a `/login` route and falls through to the next matching route (for example, a catch-all `/`) and its limit. If a catch-all route forwards to the same backend as a strictly limited route, give the catch-all a limit you are comfortable with for that backend.
+- **Client identity**: with `key: "ip"`, the client IP is taken from the leftmost `X-Forwarded-For` entry when present. Clients can set this header themselves, so strict per-route limits (for example, on login) are only as strong as the trust in that header. Deploy Aegora behind a proxy that overwrites `X-Forwarded-For`, or use `key: "api_key"` where possible.
 
 ---
 

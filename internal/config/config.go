@@ -123,6 +123,59 @@ type RateLimitConfig struct {
 	Key             string   `yaml:"key,omitempty"`
 }
 
+// RouteRateLimitConfig overrides the global rate_limit settings for a single route.
+// Fields are pointers so an omitted field (nil) is distinguishable from an explicit
+// zero or false: nil fields are inherited from the global rate_limit block.
+type RouteRateLimitConfig struct {
+	Enabled         *bool     `yaml:"enabled,omitempty"`
+	Limiter         *string   `yaml:"limiter,omitempty"`
+	MaxRequests     *int      `yaml:"max_requests,omitempty"`
+	Window          *Duration `yaml:"window,omitempty"`
+	RefillPerSecond *float64  `yaml:"refill_per_second,omitempty"`
+	Key             *string   `yaml:"key,omitempty"`
+}
+
+// isEmpty reports whether no field is set. An empty block is treated as no override,
+// so it does not silently create a second set of buckets for the route.
+func (o *RouteRateLimitConfig) isEmpty() bool {
+	return o == nil || (o.Enabled == nil && o.Limiter == nil && o.MaxRequests == nil &&
+		o.Window == nil && o.RefillPerSecond == nil && o.Key == nil)
+}
+
+// HasRateLimitOverride reports whether the route defines a non-empty rate_limit override.
+func (r RouteConfig) HasRateLimitOverride() bool {
+	return !r.RateLimit.isEmpty()
+}
+
+// EffectiveRateLimit returns the rate limit settings that apply to route: the global
+// rate_limit block with every field set in the route's override replacing its value.
+func (c *Config) EffectiveRateLimit(route RouteConfig) RateLimitConfig {
+	rl := c.RateLimit
+	o := route.RateLimit
+	if o.isEmpty() {
+		return rl
+	}
+	if o.Enabled != nil {
+		rl.Enabled = *o.Enabled
+	}
+	if o.Limiter != nil {
+		rl.Limiter = *o.Limiter
+	}
+	if o.MaxRequests != nil {
+		rl.MaxRequests = *o.MaxRequests
+	}
+	if o.Window != nil {
+		rl.Window = *o.Window
+	}
+	if o.RefillPerSecond != nil {
+		rl.RefillPerSecond = *o.RefillPerSecond
+	}
+	if o.Key != nil {
+		rl.Key = *o.Key
+	}
+	return rl
+}
+
 // ServerConfig holds HTTP server network and timeout settings.
 type ServerConfig struct {
 	Addr         string   `yaml:"addr"`
@@ -144,6 +197,8 @@ type RouteConfig struct {
 	Targets     []string          `yaml:"targets"`
 	StripPrefix string            `yaml:"strip_prefix,omitempty"`
 	LB          string            `yaml:"lb,omitempty"`
+	// RateLimit optionally overrides the global rate_limit block for this route.
+	RateLimit *RouteRateLimitConfig `yaml:"rate_limit,omitempty"`
 }
 
 // TracingConfig configures OpenTelemetry distributed tracing.
@@ -340,25 +395,19 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	if c.RateLimit.Enabled {
-		if c.RateLimit.MaxRequests <= 0 {
-			return fmt.Errorf("config: rate_limit.max_requests: must be positive, got %d", c.RateLimit.MaxRequests)
-		}
+	if err := validateRateLimit("rate_limit", c.RateLimit); err != nil {
+		return err
+	}
 
-		if c.RateLimit.Limiter != "sliding_window" && c.RateLimit.Limiter != "token_bucket" {
-			return fmt.Errorf("config: rate_limit.limiter: must be one of sliding_window, token_bucket; got %q", c.RateLimit.Limiter)
+	// Per-route overrides are validated on the merged result, so an override that is
+	// only valid in combination with inherited global fields is accepted, and errors
+	// name the route that produced them.
+	for i, route := range c.Routes {
+		if !route.HasRateLimitOverride() {
+			continue
 		}
-
-		if c.RateLimit.Key != "ip" && c.RateLimit.Key != "api_key" {
-			return fmt.Errorf("config: rate_limit.key: must be one of ip, api_key; got %q", c.RateLimit.Key)
-		}
-
-		if c.RateLimit.Limiter == "sliding_window" && c.RateLimit.Window <= 0 {
-			return fmt.Errorf("config: rate_limit.window: must be positive for sliding_window, got %s", c.RateLimit.Window)
-		}
-
-		if c.RateLimit.Limiter == "token_bucket" && c.RateLimit.RefillPerSecond <= 0 {
-			return fmt.Errorf("config: rate_limit.refill_per_second: must be positive for token_bucket, got %f", c.RateLimit.RefillPerSecond)
+		if err := validateRateLimit(fmt.Sprintf("routes[%d].rate_limit", i), c.EffectiveRateLimit(route)); err != nil {
+			return err
 		}
 	}
 
@@ -428,6 +477,36 @@ func (c *Config) Validate() error {
 		if c.Cache.L2TTL <= 0 {
 			return fmt.Errorf("config: cache.l2_ttl: must be positive, got %s", c.Cache.L2TTL)
 		}
+	}
+
+	return nil
+}
+
+// validateRateLimit checks a rate limit block. prefix names the block in error messages,
+// e.g. "rate_limit" for the global block or "routes[2].rate_limit" for a merged override.
+func validateRateLimit(prefix string, rl RateLimitConfig) error {
+	if !rl.Enabled {
+		return nil
+	}
+
+	if rl.MaxRequests <= 0 {
+		return fmt.Errorf("config: %s.max_requests: must be positive, got %d", prefix, rl.MaxRequests)
+	}
+
+	if rl.Limiter != "sliding_window" && rl.Limiter != "token_bucket" {
+		return fmt.Errorf("config: %s.limiter: must be one of sliding_window, token_bucket; got %q", prefix, rl.Limiter)
+	}
+
+	if rl.Key != "ip" && rl.Key != "api_key" {
+		return fmt.Errorf("config: %s.key: must be one of ip, api_key; got %q", prefix, rl.Key)
+	}
+
+	if rl.Limiter == "sliding_window" && rl.Window <= 0 {
+		return fmt.Errorf("config: %s.window: must be positive for sliding_window, got %s", prefix, rl.Window)
+	}
+
+	if rl.Limiter == "token_bucket" && rl.RefillPerSecond <= 0 {
+		return fmt.Errorf("config: %s.refill_per_second: must be positive for token_bucket, got %f", prefix, rl.RefillPerSecond)
 	}
 
 	return nil

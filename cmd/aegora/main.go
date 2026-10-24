@@ -131,6 +131,48 @@ func buildRateLimitMiddleware(cfg config.RateLimitConfig) middleware.Middleware 
 	return middleware.RateLimit(limiterFactory, keyFn, []string{"/livez", "/readyz"})
 }
 
+// buildRouteRateLimitMiddleware constructs rate limiting with per-route overrides.
+// Routes with a rate_limit override get their own limiter built from the merged
+// settings (or none, if the merged block is disabled); all other requests use the
+// global limiter. It returns nil when no request would be rate limited.
+func buildRouteRateLimitMiddleware(cfg *config.Config, router *proxy.Router) middleware.Middleware {
+	var global middleware.Middleware
+	if cfg.RateLimit.Enabled {
+		global = buildRateLimitMiddleware(cfg.RateLimit)
+	}
+
+	byRoute := make(map[string]middleware.Middleware)
+	anyRouteEnabled := false
+	for _, route := range cfg.Routes {
+		if !route.HasRateLimitOverride() {
+			continue
+		}
+		effective := cfg.EffectiveRateLimit(route)
+		if effective.Enabled {
+			byRoute[route.Name] = buildRateLimitMiddleware(effective)
+			anyRouteEnabled = true
+		} else {
+			byRoute[route.Name] = nil
+		}
+	}
+
+	switch {
+	case len(byRoute) == 0:
+		// No overrides: identical to the original single global limiter.
+		return global
+	case global == nil && !anyRouteEnabled:
+		return nil
+	}
+
+	match := func(r *http.Request) string {
+		if rc := router.Match(r); rc != nil {
+			return rc.Name
+		}
+		return ""
+	}
+	return middleware.RouteRateLimit(match, byRoute, global)
+}
+
 // toReliabilityConfig maps config.ReliabilityConfig to proxy.ReliabilityConfig with sensible defaults
 // and configures the base HTTP transport.
 func toReliabilityConfig(cfg config.ReliabilityConfig, baseTransport http.RoundTripper) proxy.ReliabilityConfig {
@@ -298,8 +340,8 @@ func buildAppWithRegistry(cfg *config.Config, logger *slog.Logger, reg *promethe
 		mws = append(mws, sc.Admit)
 	}
 
-	if cfg.RateLimit.Enabled {
-		mws = append(mws, buildRateLimitMiddleware(cfg.RateLimit))
+	if rl := buildRouteRateLimitMiddleware(cfg, gw.Router()); rl != nil {
+		mws = append(mws, rl)
 	}
 
 	chain := middleware.New(mws...)
@@ -329,7 +371,8 @@ func buildAppWithRegistry(cfg *config.Config, logger *slog.Logger, reg *promethe
 //  7. Load Shedding (optional): Positioned immediately after the body limit and before RateLimit to shed
 //     globally before spending per-key rate-limit budget or queue capacity.
 //  8. RateLimit (optional): Positioned between Load Shedding and Cache / mux / gateway to enforce
-//     per-key rate limits uniformly on all incoming requests.
+//     per-key rate limits uniformly on all incoming requests. Routes with a rate_limit override
+//     use their own limiter (matched with the same router as the gateway); others use the global one.
 //  9. Cache (optional): Positioned between RateLimit and Queue.Admit so that hits skip
 //     queueing and backend load (the expensive parts) while per-key rate limiting still applies uniformly.
 //  10. Queue Admission (optional): Positioned between Cache and the upstream gateway to enforce

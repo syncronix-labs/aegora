@@ -15,6 +15,9 @@ routes:
       - "http://127.0.0.1:8081"
     strip_prefix: "/api"
     lb: "round_robin"
+    # Optional per-route override of the global rate_limit block (unset fields are inherited):
+    # rate_limit:
+    #   max_requests: 30
   - name: "web-service"
     path_prefix: "/"
     targets:
