@@ -23,10 +23,14 @@ type RouteMatcher interface {
 //   - Errors: captured by status code label in aegora_requests_total (4xx/5xx)
 //   - Duration: aegora_request_duration_seconds (HistogramVec: route, method)
 //   - Concurrency: aegora_inflight_requests (GaugeVec: route)
+//   - Cache: aegora_cache_requests_total (CounterVec: route, result)
 type Metrics struct {
 	RequestsTotal   *prometheus.CounterVec
 	RequestDuration *prometheus.HistogramVec
 	Inflight        *prometheus.GaugeVec
+	// CacheRequestsTotal counts cache lookups by route and outcome, so hit
+	// ratio is a division against aegora_requests_total on the same label.
+	CacheRequestsTotal *prometheus.CounterVec
 }
 
 // New constructs and registers the gateway RED metrics on the provided registry.
@@ -70,6 +74,13 @@ func New(reg *prometheus.Registry) *Metrics {
 			},
 			[]string{"route"},
 		),
+		CacheRequestsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "aegora_cache_requests_total",
+				Help: "Total number of cache lookups made by the gateway, by route and outcome.",
+			},
+			[]string{"route", "result"},
+		),
 	}
 
 	if err := reg.Register(m.RequestsTotal); err != nil {
@@ -99,7 +110,25 @@ func New(reg *prometheus.Registry) *Metrics {
 			panic(err)
 		}
 	}
+	if err := reg.Register(m.CacheRequestsTotal); err != nil {
+		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
+			if existing, ok := are.ExistingCollector.(*prometheus.CounterVec); ok {
+				m.CacheRequestsTotal = existing
+			}
+		} else {
+			panic(err)
+		}
+	}
 	return m
+}
+
+// ObserveCache records the outcome of a cache lookup, where result is "hit" or
+// "miss". It satisfies the Observer interface declared in internal/cache, which
+// is defined there rather than here so the cache package does not have to import
+// this one: internal/metrics reaches internal/proxy, and internal/proxy imports
+// internal/cache, so the reverse edge would be a cycle.
+func (m *Metrics) ObserveCache(route, result string) {
+	m.CacheRequestsTotal.WithLabelValues(route, result).Inc()
 }
 
 // Middleware constructs an HTTP middleware that observes RED metrics for all requests.

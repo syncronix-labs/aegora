@@ -103,6 +103,23 @@ func buildMux(gw http.Handler) *http.ServeMux {
 }
 
 // buildRateLimitMiddleware constructs the rate-limiting middleware based on configuration.
+// routeNamer labels cache observations with the route name the request metrics
+// use, so the two counters line up on the same label value.
+type routeNamer struct {
+	router *proxy.Router
+}
+
+// RouteName implements cache.RouteNamer.
+func (n routeNamer) RouteName(r *http.Request) string {
+	if n.router == nil {
+		return "unmatched"
+	}
+	if matched := n.router.Match(r); matched != nil && matched.Name != "" {
+		return matched.Name
+	}
+	return "unmatched"
+}
+
 func buildRateLimitMiddleware(cfg config.RateLimitConfig) middleware.Middleware {
 	var limiterFactory func() ratelimit.Limiter
 	switch cfg.Limiter {
@@ -261,6 +278,11 @@ func buildAppWithRegistry(cfg *config.Config, logger *slog.Logger, reg *promethe
 		gwHandler = q.Admit(gw)
 	}
 
+	// One Metrics instance for the whole chain: the request middleware and the
+	// cache observer have to share collectors so a hit ratio is a division on
+	// the same route label rather than a join between two registries.
+	m := metrics.New(reg)
+
 	// In-memory / multi-tier response caching: positioned between RateLimit and Queue.Admit so that
 	// hits skip queueing and backend load (the expensive parts) while per-key rate
 	// limiting still applies uniformly.
@@ -301,7 +323,8 @@ func buildAppWithRegistry(cfg *config.Config, logger *slog.Logger, reg *promethe
 
 		// Note: CacheMiddleware requires zero modifications to support TieredCache
 		// because it programs strictly against the Store interface with the L1 TTL.
-		gwHandler = cache.CacheMiddleware(cacheStore, cfg.Cache.TTL.Duration(), cfg.Cache.MaxBodyBytes)(gwHandler)
+		gwHandler = cache.CacheMiddleware(cacheStore, cfg.Cache.TTL.Duration(), cfg.Cache.MaxBodyBytes,
+			cache.WithObserver(m, routeNamer{router: gw.Router()}))(gwHandler)
 	}
 
 	mux := buildMux(gwHandler)
@@ -316,7 +339,7 @@ func buildAppWithRegistry(cfg *config.Config, logger *slog.Logger, reg *promethe
 	}
 
 	mws = append(mws,
-		metrics.Middleware(reg, gw.Router()),
+		m.Middleware(gw.Router()),
 		middleware.AccessLog(logger),
 	)
 
