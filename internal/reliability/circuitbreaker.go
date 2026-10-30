@@ -119,6 +119,24 @@ func (cb *CircuitBreaker) Allow() bool {
 	}
 }
 
+// CooldownRemaining reports how much of the open-state cooldown is left before a
+// half-open probe will be allowed. It returns zero whenever the breaker is not
+// open: a closed breaker is not holding traffic back, and a half-open one has
+// already admitted its probes, so neither has a point in time to advertise.
+func (cb *CircuitBreaker) CooldownRemaining() time.Duration {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	if cb.state != StateOpen {
+		return 0
+	}
+	remaining := cb.cooldown - time.Since(cb.lastTransition)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
 // RecordSuccess records a successful request.
 // In Closed state, it resets the consecutive failure counter.
 // In Half-Open state, it tracks successful probes and closes the breaker when reaching successThreshold.
