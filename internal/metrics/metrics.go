@@ -23,10 +23,13 @@ type RouteMatcher interface {
 //   - Errors: captured by status code label in aegora_requests_total (4xx/5xx)
 //   - Duration: aegora_request_duration_seconds (HistogramVec: route, method)
 //   - Concurrency: aegora_inflight_requests (GaugeVec: route)
+//   - Drops: aegora_shed_total and aegora_queue_dropped_total (CounterVec: route)
 type Metrics struct {
 	RequestsTotal   *prometheus.CounterVec
 	RequestDuration *prometheus.HistogramVec
 	Inflight        *prometheus.GaugeVec
+	ShedTotal       *prometheus.CounterVec
+	QueueDropped    *prometheus.CounterVec
 }
 
 // New constructs and registers the gateway RED metrics on the provided registry.
@@ -70,6 +73,20 @@ func New(reg *prometheus.Registry) *Metrics {
 			},
 			[]string{"route"},
 		),
+		ShedTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "aegora_shed_total",
+				Help: "Total number of requests rejected by the AIMD load shedding controller.",
+			},
+			[]string{"route"},
+		),
+		QueueDropped: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "aegora_queue_dropped_total",
+				Help: "Total number of requests dropped by the admission queue (full depth, CoDel, or shutdown).",
+			},
+			[]string{"route"},
+		),
 	}
 
 	if err := reg.Register(m.RequestsTotal); err != nil {
@@ -94,6 +111,24 @@ func New(reg *prometheus.Registry) *Metrics {
 		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
 			if existing, ok := are.ExistingCollector.(*prometheus.GaugeVec); ok {
 				m.Inflight = existing
+			}
+		} else {
+			panic(err)
+		}
+	}
+	if err := reg.Register(m.ShedTotal); err != nil {
+		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
+			if existing, ok := are.ExistingCollector.(*prometheus.CounterVec); ok {
+				m.ShedTotal = existing
+			}
+		} else {
+			panic(err)
+		}
+	}
+	if err := reg.Register(m.QueueDropped); err != nil {
+		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
+			if existing, ok := are.ExistingCollector.(*prometheus.CounterVec); ok {
+				m.QueueDropped = existing
 			}
 		} else {
 			panic(err)
@@ -137,8 +172,40 @@ func (m *Metrics) Middleware(router RouteMatcher) middleware.Middleware {
 
 			m.RequestsTotal.WithLabelValues(routeName, r.Method, code).Inc()
 			m.RequestDuration.WithLabelValues(routeName, r.Method).Observe(duration)
+
+			// Drop counters: shedding and queue mark their rejections with the
+			// header below; reading it here keeps the route label consistent
+			// with the rest of this middleware without threading a metrics
+			// dependency through the shedding and queue packages.
+			switch rw.Header().Get(dropHeader) {
+			case dropShed:
+				m.ShedTotal.WithLabelValues(routeName).Inc()
+			case dropQueue:
+				m.QueueDropped.WithLabelValues(routeName).Inc()
+			}
 		})
 	}
+}
+
+// Header values that mark a request as dropped by a specific admission-control
+// component. They are set on rejected responses by the shedding controller and
+// the admission queue, and consumed by the metrics middleware above.
+const (
+	dropHeader = "X-Aegora-Drop"
+	dropShed   = "shedding"
+	dropQueue  = "queue"
+)
+
+// MarkShed sets the drop marker that tells the metrics middleware the request
+// was rejected by the AIMD shedding controller. Call before writing the 503.
+func MarkShed(h http.Header) {
+	h.Set(dropHeader, dropShed)
+}
+
+// MarkQueueDropped sets the drop marker that tells the metrics middleware the
+// request was dropped by the admission queue. Call before writing the 503.
+func MarkQueueDropped(h http.Header) {
+	h.Set(dropHeader, dropQueue)
 }
 
 // statusResponseWriter captures the HTTP status code written by downstream handlers.
