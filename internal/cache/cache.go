@@ -396,6 +396,39 @@ func serveEntry(w http.ResponseWriter, r *http.Request, entry *Entry, xCache str
 	}
 }
 
+// cacheControlMaxAge returns the max-age directive of a Cache-Control header.
+// It reports false when the header carries no usable max-age, which includes a
+// value that is not a non-negative integer: the directive is then ignored
+// rather than guessed at.
+func cacheControlMaxAge(header http.Header) (time.Duration, bool) {
+	for _, value := range header.Values("Cache-Control") {
+		for _, directive := range strings.Split(value, ",") {
+			name, argument, found := strings.Cut(strings.TrimSpace(directive), "=")
+			if !found || !strings.EqualFold(strings.TrimSpace(name), "max-age") {
+				continue
+			}
+			seconds, err := strconv.Atoi(strings.Trim(strings.TrimSpace(argument), `"`))
+			if err != nil || seconds < 0 {
+				continue
+			}
+			return time.Duration(seconds) * time.Second, true
+		}
+	}
+	return 0, false
+}
+
+// effectiveTTL is how long a response may be reused: the operator's configured
+// TTL, capped by whatever the origin allowed. The configured value is a ceiling,
+// so a max-age longer than it changes nothing, and a shorter one wins because
+// serving a response past the lifetime its origin granted is a correctness bug,
+// not a tuning choice.
+func effectiveTTL(configured time.Duration, header http.Header) time.Duration {
+	if maxAge, ok := cacheControlMaxAge(header); ok && maxAge < configured {
+		return maxAge
+	}
+	return configured
+}
+
 // fetchAndStore runs the downstream handler with response buffering, stores the response
 // if it is cache-eligible, and writes it to w. It returns the stored entry, or nil if the
 // response was not stored.
@@ -443,15 +476,20 @@ func fetchAndStore(
 		}
 
 		now := time.Now()
-		entry = &Entry{
-			Status:    rw.status,
-			Header:    rw.header.Clone(),
-			Body:      bytes.Clone(bodyBytes),
-			StoredAt:  now,
-			ExpiresAt: now.Add(ttl),
-			ETag:      etag,
+		lifetime := effectiveTTL(ttl, rw.header)
+		// A max-age of zero means the origin allows no reuse at all, so the
+		// response is served to this client but never stored.
+		if lifetime > 0 {
+			entry = &Entry{
+				Status:    rw.status,
+				Header:    rw.header.Clone(),
+				Body:      bytes.Clone(bodyBytes),
+				StoredAt:  now,
+				ExpiresAt: now.Add(lifetime),
+				ETag:      etag,
+			}
+			store.Put(cacheKey, entry)
 		}
-		store.Put(cacheKey, entry)
 	}
 
 	// Flush captured response to the client
