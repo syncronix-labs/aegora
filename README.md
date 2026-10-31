@@ -358,7 +358,11 @@ Aegora is built and maintained by Shubham Kashyap and Meeth Davda. Track ongoing
 
 ## Contributing
 
-Pull requests are welcome. Contribution guidelines:
+Pull requests are welcome.
+
+New here? Start with an issue labeled [good first issue](https://github.com/syncronix-labs/aegora/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22). They are small, self-contained, and each one comes with acceptance criteria. For something larger, see the [help wanted](https://github.com/syncronix-labs/aegora/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) issues. If you want to build something that is not listed, please open an issue first so the scope is agreed before any code is written.
+
+Contribution guidelines:
 
 - Run `make verify` (formatting, tidy, lint, tests, build) before submitting changes.
 - Keep pull requests focused: one feature or bugfix per PR.
