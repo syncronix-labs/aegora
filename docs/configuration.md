@@ -69,7 +69,10 @@ An array of route definitions. At least one route is required.
 | `targets` | []string | none (required) | Yes | List of upstream target base URLs (for example, `["http://backend-1:8081", "http://backend-2:8082"]`). Must be valid URLs with scheme and host. |
 | `strip_prefix` | string | `""` | Yes | Optional path prefix to remove before forwarding to upstreams. If specified, must start with `"/"`. |
 | `lb` | string | `"round_robin"` | Yes | Load balancing policy across targets: `"round_robin"` or `"least_connections"`. |
+| `timeout` | Duration | none (no timeout) | Yes | Optional per-route timeout for the whole outbound exchange (for example, `"5s"`). Unset or zero keeps the current behavior; when set, an upstream that exceeds it aborts and the client receives the gateway's 502 response. Must be non-negative. |
 | `rate_limit` | object | none (inherits global) | Yes | Optional per-route override of the global `rate_limit` block. See [Per-Route Overrides](#per-route-overrides). |
+
+**Upstream timeout**: `timeout` bounds the entire outbound exchange, including the response body transfer, not just the time to first byte. Set it above the slowest healthy response time for that route, because a legitimately long download is also cut when the deadline fires. A timed-out attempt is a transport error, so the configured retry policy decides whether another attempt happens.
 
 ---
 

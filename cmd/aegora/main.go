@@ -51,6 +51,7 @@ func toProxyRoutes(cfgRoutes []config.RouteConfig) []proxy.RouteConfig {
 			Targets:          r.Targets,
 			StripPrefix:      r.StripPrefix,
 			LBPolicy:         r.LB,
+			Timeout:          r.Timeout.Duration(),
 		}
 	}
 	return routes

@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // RouteConfig defines routing rules and destinations for a proxy route.
@@ -21,6 +22,8 @@ type RouteConfig struct {
 	Targets          []string
 	StripPrefix      string
 	LBPolicy         string
+	// Timeout bounds the whole outbound exchange for the route when positive.
+	Timeout time.Duration
 }
 
 // Router matches incoming HTTP requests to configured backend routes based on

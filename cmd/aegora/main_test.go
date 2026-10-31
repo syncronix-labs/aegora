@@ -1589,3 +1589,17 @@ func requireJSONError(t *testing.T, rec *httptest.ResponseRecorder, wantError st
 		t.Fatal("expected a non-empty request_id in the error body")
 	}
 }
+
+func TestToProxyRoutes_Timeout(t *testing.T) {
+	routes := toProxyRoutes([]config.RouteConfig{
+		{
+			Name:       "api",
+			PathPrefix: "/api",
+			Targets:    []string{"http://backend:8080"},
+			Timeout:    config.Duration(1500 * time.Millisecond),
+		},
+	})
+	if got := routes[0].Timeout; got != 1500*time.Millisecond {
+		t.Fatalf("route timeout = %v, want %v", got, 1500*time.Millisecond)
+	}
+}

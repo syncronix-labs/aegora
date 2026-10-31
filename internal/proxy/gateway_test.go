@@ -503,3 +503,52 @@ func TestGateway_InvalidReliabilityConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestGateway_PerRouteTimeout(t *testing.T) {
+	const backendDelay = 700 * time.Millisecond
+
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(backendDelay)
+		_, _ = w.Write([]byte("slow"))
+	}))
+	defer slow.Close()
+
+	gw, err := NewGateway([]RouteConfig{
+		{
+			Name:       "timed",
+			PathPrefix: "/timed",
+			Targets:    []string{slow.URL},
+			LBPolicy:   "round_robin",
+			Timeout:    100 * time.Millisecond,
+		},
+		{
+			Name:       "untimed",
+			PathPrefix: "/untimed",
+			Targets:    []string{slow.URL},
+			LBPolicy:   "round_robin",
+		},
+	}, defaultTestReliabilityConfig())
+	if err != nil {
+		t.Fatalf("NewGateway: %v", err)
+	}
+
+	start := time.Now()
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/timed", nil))
+	elapsed := time.Since(start)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("timed route status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+	if elapsed >= backendDelay/2 {
+		t.Fatalf("timed route took %v, want well under the %v backend delay", elapsed, backendDelay)
+	}
+
+	rec = httptest.NewRecorder()
+	gw.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/untimed", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("untimed route status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Body.String(); got != "slow" {
+		t.Fatalf("untimed route body = %q, want %q", got, "slow")
+	}
+}

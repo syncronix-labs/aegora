@@ -197,6 +197,9 @@ type RouteConfig struct {
 	Targets     []string          `yaml:"targets"`
 	StripPrefix string            `yaml:"strip_prefix,omitempty"`
 	LB          string            `yaml:"lb,omitempty"`
+	// Timeout optionally bounds the whole outbound exchange for this route.
+	// Zero means no per-route timeout.
+	Timeout Duration `yaml:"timeout,omitempty"`
 	// RateLimit optionally overrides the global rate_limit block for this route.
 	RateLimit *RouteRateLimitConfig `yaml:"rate_limit,omitempty"`
 }
@@ -403,6 +406,9 @@ func (c *Config) Validate() error {
 	// only valid in combination with inherited global fields is accepted, and errors
 	// name the route that produced them.
 	for i, route := range c.Routes {
+		if route.Timeout < 0 {
+			return fmt.Errorf("config: routes[%d].timeout: must be non-negative, got %s", i, route.Timeout)
+		}
 		if !route.HasRateLimitOverride() {
 			continue
 		}

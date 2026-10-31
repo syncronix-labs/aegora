@@ -224,6 +224,13 @@ func TestValidate_MutatedNegativeCases(t *testing.T) {
 			wantFieldInErr: "routes[0].lb",
 		},
 		{
+			name: "negative route timeout",
+			mutate: func(c *config.Config) {
+				c.Routes[0].Timeout = config.Duration(-1)
+			},
+			wantFieldInErr: "routes[0].timeout",
+		},
+		{
 			name: "invalid metrics_addr missing port",
 			mutate: func(c *config.Config) {
 				c.Observability.MetricsAddr = "127.0.0.1"
@@ -1600,5 +1607,35 @@ rate_limit:
 	}
 	if cfg.Routes[2].HasRateLimitOverride() {
 		t.Fatal("api route should have no override")
+	}
+}
+
+func TestLoad_RouteTimeoutYAML(t *testing.T) {
+	path := t.TempDir() + "/aegora.yaml"
+	data := `
+server:
+  addr: "127.0.0.1:8080"
+  read_timeout: "15s"
+  write_timeout: "30s"
+  idle_timeout: "60s"
+routes:
+  - name: "api"
+    path_prefix: "/"
+    targets: ["http://127.0.0.1:8081"]
+    timeout: "2s"
+observability:
+  log_level: "info"
+  metrics_addr: "127.0.0.1:9090"
+`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("config.Load() unexpected error: %v", err)
+	}
+	if got := cfg.Routes[0].Timeout; got != config.Duration(2*time.Second) {
+		t.Fatalf("route timeout = %v, want 2s", got)
 	}
 }
