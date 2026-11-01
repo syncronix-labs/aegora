@@ -338,3 +338,143 @@ func TestPool_DoneOutOfBounds(t *testing.T) {
 	pool.ReportSuccess(-1)
 	pool.ReportSuccess(100)
 }
+
+func TestPool_WeightedRoundRobinDistribution(t *testing.T) {
+	targets := []string{
+		"http://10.0.0.1:8080",
+		"http://10.0.0.2:8080",
+	}
+
+	pool, err := NewPoolWithWeights(targets, "round_robin", map[string]int{
+		targets[0]: 3,
+		targets[1]: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewPoolWithWeights: %v", err)
+	}
+
+	counts := make([]int, len(targets))
+	for i := 0; i < 40; i++ {
+		u, idx, ok := pool.Next()
+		if !ok {
+			t.Fatalf("call %d: expected ok=true", i)
+		}
+		if u.String() != targets[idx] {
+			t.Fatalf("call %d: returned URL %s does not match index %d (%s)", i, u.String(), idx, targets[idx])
+		}
+		counts[idx]++
+		pool.Done(idx)
+	}
+
+	if counts[0] != 30 || counts[1] != 10 {
+		t.Fatalf("weighted distribution = %v, want 30/10 for weights 3:1", counts)
+	}
+}
+
+func TestPool_WeightsDefaultToOne(t *testing.T) {
+	targets := []string{
+		"http://10.0.0.1:8080",
+		"http://10.0.0.2:8080",
+	}
+	pool, err := NewPoolWithWeights(targets, "round_robin", map[string]int{targets[0]: 1})
+	if err != nil {
+		t.Fatalf("NewPoolWithWeights: %v", err)
+	}
+	if pool.weighted {
+		t.Fatal("pool with all weights equal to 1 should use the unweighted fast path")
+	}
+
+	wantOrder := []int{0, 1, 0, 1}
+	for i, wantIdx := range wantOrder {
+		_, idx, ok := pool.Next()
+		if !ok || idx != wantIdx {
+			t.Fatalf("call %d: expected index %d, got idx=%d ok=%v", i, wantIdx, idx, ok)
+		}
+		pool.Done(idx)
+	}
+}
+
+func TestPool_WeightsValidation(t *testing.T) {
+	targets := []string{"http://10.0.0.1:8080", "http://10.0.0.2:8080"}
+
+	tests := []struct {
+		name    string
+		policy  string
+		weights map[string]int
+		errText string
+	}{
+		{
+			name:    "weights require round_robin",
+			policy:  "least_connections",
+			weights: map[string]int{targets[0]: 2},
+			errText: "only supported with policy",
+		},
+		{
+			name:    "unknown target",
+			policy:  "round_robin",
+			weights: map[string]int{"http://10.0.0.9:8080": 2},
+			errText: "unknown target",
+		},
+		{
+			name:    "zero weight",
+			policy:  "round_robin",
+			weights: map[string]int{targets[0]: 0},
+			errText: "must be positive",
+		},
+		{
+			name:    "negative weight",
+			policy:  "round_robin",
+			weights: map[string]int{targets[1]: -1},
+			errText: "must be positive",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewPoolWithWeights(targets, tt.policy, tt.weights)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.errText)
+			}
+			if !strings.Contains(err.Error(), tt.errText) {
+				t.Fatalf("error %q does not contain expected substring %q", err.Error(), tt.errText)
+			}
+		})
+	}
+}
+
+func TestPool_WeightedRoundRobinSkipsUnhealthy(t *testing.T) {
+	targets := []string{
+		"http://10.0.0.1:8080",
+		"http://10.0.0.2:8080",
+	}
+	pool, err := NewPoolWithWeights(targets, "round_robin", map[string]int{
+		targets[0]: 3,
+		targets[1]: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewPoolWithWeights: %v", err)
+	}
+
+	pool.ReportFailure(0)
+	for i := 0; i < 5; i++ {
+		_, idx, ok := pool.Next()
+		if !ok || idx != 1 {
+			t.Fatalf("call %d: expected index 1 while target 0 is unhealthy, got idx=%d ok=%v", i, idx, ok)
+		}
+		pool.Done(idx)
+	}
+
+	pool.ReportSuccess(0)
+	counts := make([]int, len(targets))
+	for i := 0; i < 8; i++ {
+		_, idx, ok := pool.Next()
+		if !ok {
+			t.Fatalf("call %d: expected ok=true", i)
+		}
+		counts[idx]++
+		pool.Done(idx)
+	}
+	if counts[0] != 6 || counts[1] != 2 {
+		t.Fatalf("post-recovery distribution = %v, want 6/2 for weights 3:1", counts)
+	}
+}

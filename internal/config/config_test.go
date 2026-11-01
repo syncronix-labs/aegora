@@ -224,6 +224,28 @@ func TestValidate_MutatedNegativeCases(t *testing.T) {
 			wantFieldInErr: "routes[0].lb",
 		},
 		{
+			name: "weights with least_connections policy",
+			mutate: func(c *config.Config) {
+				c.Routes[0].LB = "least_connections"
+				c.Routes[0].Weights = map[string]int{c.Routes[0].Targets[0]: 2}
+			},
+			wantFieldInErr: "routes[0].weights",
+		},
+		{
+			name: "weight for unknown target",
+			mutate: func(c *config.Config) {
+				c.Routes[0].Weights = map[string]int{"http://127.0.0.1:9999": 2}
+			},
+			wantFieldInErr: "routes[0].weights",
+		},
+		{
+			name: "non-positive weight",
+			mutate: func(c *config.Config) {
+				c.Routes[0].Weights = map[string]int{c.Routes[0].Targets[0]: 0}
+			},
+			wantFieldInErr: "routes[0].weights",
+		},
+		{
 			name: "invalid metrics_addr missing port",
 			mutate: func(c *config.Config) {
 				c.Observability.MetricsAddr = "127.0.0.1"
@@ -1600,5 +1622,39 @@ rate_limit:
 	}
 	if cfg.Routes[2].HasRateLimitOverride() {
 		t.Fatal("api route should have no override")
+	}
+}
+
+func TestLoad_RouteWeightsYAML(t *testing.T) {
+	path := t.TempDir() + "/aegora.yaml"
+	data := `
+server:
+  addr: "127.0.0.1:8080"
+  read_timeout: "15s"
+  write_timeout: "30s"
+  idle_timeout: "60s"
+routes:
+  - name: "api"
+    path_prefix: "/api"
+    targets: ["http://127.0.0.1:8081", "http://127.0.0.1:8082"]
+    lb: "round_robin"
+    weights:
+      "http://127.0.0.1:8081": 3
+      "http://127.0.0.1:8082": 1
+observability:
+  log_level: "info"
+`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("config.Load() unexpected error: %v", err)
+	}
+
+	want := map[string]int{"http://127.0.0.1:8081": 3, "http://127.0.0.1:8082": 1}
+	if !reflect.DeepEqual(cfg.Routes[0].Weights, want) {
+		t.Fatalf("weights = %v, want %v", cfg.Routes[0].Weights, want)
 	}
 }

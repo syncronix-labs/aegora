@@ -16,6 +16,10 @@ import (
 type Pool struct {
 	targets        []*url.URL
 	policy         string
+	weights        []int
+	weighted       bool
+	wrrMu          sync.Mutex
+	currentWeights []int
 	counter        atomic.Uint64
 	inFlight       []atomic.Int64
 	mu             sync.RWMutex
@@ -26,6 +30,13 @@ type Pool struct {
 // NewPool parses target URLs, validates the load balancing policy, and initializes
 // an upstream pool with a default 30-second failure cooldown.
 func NewPool(targets []string, policy string) (*Pool, error) {
+	return NewPoolWithWeights(targets, policy, nil)
+}
+
+// NewPoolWithWeights initializes a pool with optional per-target weights keyed by
+// target URL. Weights must be positive, are only supported with the round_robin
+// policy, and default to 1 for targets without an entry.
+func NewPoolWithWeights(targets []string, policy string, weights map[string]int) (*Pool, error) {
 	if len(targets) == 0 {
 		return nil, errors.New("pool: must have at least one target")
 	}
@@ -49,9 +60,40 @@ func NewPool(targets []string, policy string) (*Pool, error) {
 		return nil, fmt.Errorf("pool: unsupported load balancing policy %q", policy)
 	}
 
+	parsedWeights := make([]int, len(parsedTargets))
+	for i := range parsedWeights {
+		parsedWeights[i] = 1
+	}
+	weighted := false
+	if len(weights) > 0 {
+		if policy != "round_robin" {
+			return nil, fmt.Errorf("pool: weights are only supported with policy %q, got %q", "round_robin", policy)
+		}
+		indexByTarget := make(map[string]int, len(targets))
+		for i, target := range targets {
+			indexByTarget[target] = i
+		}
+		for target, weight := range weights {
+			i, found := indexByTarget[target]
+			if !found {
+				return nil, fmt.Errorf("pool: weight configured for unknown target %q", target)
+			}
+			if weight <= 0 {
+				return nil, fmt.Errorf("pool: weight for target %q must be positive, got %d", target, weight)
+			}
+			parsedWeights[i] = weight
+			if weight != 1 {
+				weighted = true
+			}
+		}
+	}
+
 	return &Pool{
 		targets:        parsedTargets,
 		policy:         policy,
+		weights:        parsedWeights,
+		weighted:       weighted,
+		currentWeights: make([]int, len(parsedTargets)),
 		inFlight:       make([]atomic.Int64, len(parsedTargets)),
 		unhealthyUntil: make([]time.Time, len(parsedTargets)),
 		cooldown:       30 * time.Second,
@@ -70,8 +112,43 @@ func (p *Pool) Next() (target *url.URL, index int, ok bool) {
 	case "least_connections":
 		return p.nextLeastConnections()
 	default:
+		if p.weighted {
+			return p.nextWeightedRoundRobin()
+		}
 		return p.nextRoundRobin()
 	}
+}
+
+// nextWeightedRoundRobin implements the smooth weighted round-robin algorithm
+// (as used by nginx): each healthy target's current weight grows by its
+// configured weight, the highest current weight is selected, and the total
+// weight of the healthy targets is subtracted from it. This yields an even
+// interleaving of targets proportional to their weights.
+func (p *Pool) nextWeightedRoundRobin() (*url.URL, int, bool) {
+	p.wrrMu.Lock()
+	defer p.wrrMu.Unlock()
+
+	bestIndex := -1
+	total := 0
+
+	for i := range p.targets {
+		if !p.isHealthy(i) {
+			continue
+		}
+		p.currentWeights[i] += p.weights[i]
+		total += p.weights[i]
+		if bestIndex == -1 || p.currentWeights[i] > p.currentWeights[bestIndex] {
+			bestIndex = i
+		}
+	}
+
+	if bestIndex == -1 {
+		return nil, -1, false
+	}
+
+	p.currentWeights[bestIndex] -= total
+	p.inFlight[bestIndex].Add(1)
+	return p.targets[bestIndex], bestIndex, true
 }
 
 func (p *Pool) nextRoundRobin() (*url.URL, int, bool) {

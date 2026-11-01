@@ -101,7 +101,7 @@ func NewGateway(routes []RouteConfig, rc ReliabilityConfig) (*Gateway, error) {
 	for i := range router.routes {
 		r := &router.routes[i]
 
-		pool, err := NewPool(r.Targets, r.LBPolicy)
+		pool, err := NewPoolWithWeights(r.Targets, r.LBPolicy, r.Weights)
 		if err != nil {
 			return nil, fmt.Errorf("gateway: route %q pool init: %w", r.Name, err)
 		}

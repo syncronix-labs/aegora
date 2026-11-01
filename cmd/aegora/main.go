@@ -49,6 +49,7 @@ func toProxyRoutes(cfgRoutes []config.RouteConfig) []proxy.RouteConfig {
 			Methods:          r.Methods,
 			Headers:          r.Headers,
 			Targets:          r.Targets,
+			Weights:          r.Weights,
 			StripPrefix:      r.StripPrefix,
 			LBPolicy:         r.LB,
 		}

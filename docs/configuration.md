@@ -69,7 +69,31 @@ An array of route definitions. At least one route is required.
 | `targets` | []string | none (required) | Yes | List of upstream target base URLs (for example, `["http://backend-1:8081", "http://backend-2:8082"]`). Must be valid URLs with scheme and host. |
 | `strip_prefix` | string | `""` | Yes | Optional path prefix to remove before forwarding to upstreams. If specified, must start with `"/"`. |
 | `lb` | string | `"round_robin"` | Yes | Load balancing policy across targets: `"round_robin"` or `"least_connections"`. |
+| `weights` | map[string]int | `{}` | Yes | Optional per-target traffic weights keyed by target URL. Only valid with `lb: "round_robin"`. Every weight must be positive; targets without an entry default to 1. |
 | `rate_limit` | object | none (inherits global) | Yes | Optional per-route override of the global `rate_limit` block. See [Per-Route Overrides](#per-route-overrides). |
+
+### Weighted Round-Robin
+
+When `weights` is set, the route uses smooth weighted round-robin (the nginx algorithm): each healthy target's current weight grows by its configured weight, the highest current weight is selected, and the total of the healthy weights is subtracted from the winner. Traffic is therefore interleaved evenly in proportion to the weights rather than sent in bursts.
+
+```yaml
+routes:
+  - name: "api"
+    path_prefix: "/api"
+    lb: "round_robin"
+    targets:
+      - "http://api-canary:8080"
+      - "http://api-stable:8080"
+    weights:
+      "http://api-canary:8080": 1     # ~10% of requests
+      "http://api-stable:8080": 9     # ~90% of requests
+```
+
+Behavior:
+- Weights are keyed by the exact target URL string; a key that does not appear in `targets` is rejected at load time, as is a non-positive weight.
+- `weights` is rejected when `lb` is `"least_connections"`.
+- Unhealthy targets are skipped and their share is redistributed across the remaining healthy targets for the duration of their cooldown.
+- If every target has weight 1, the gateway uses the regular round-robin path with no extra synchronization.
 
 ---
 
