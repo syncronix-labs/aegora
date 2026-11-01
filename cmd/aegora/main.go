@@ -51,9 +51,22 @@ func toProxyRoutes(cfgRoutes []config.RouteConfig) []proxy.RouteConfig {
 			Targets:          r.Targets,
 			StripPrefix:      r.StripPrefix,
 			LBPolicy:         r.LB,
+			HealthCheck:      toHealthCheckConfig(r.HealthCheck),
 		}
 	}
 	return routes
+}
+
+// toHealthCheckConfig maps a config health check into the proxy form, or nil when disabled.
+func toHealthCheckConfig(hc *config.HealthCheckConfig) *proxy.HealthCheckConfig {
+	if hc == nil || !hc.Enabled {
+		return nil
+	}
+	return &proxy.HealthCheckConfig{
+		Path:     hc.Path,
+		Interval: hc.Interval.Duration(),
+		Timeout:  hc.Timeout.Duration(),
+	}
 }
 
 // parseLogLevel parses a log level string case-insensitively into a slog.Level.
@@ -215,12 +228,12 @@ func toReliabilityConfig(cfg config.ReliabilityConfig, baseTransport http.RoundT
 
 // buildApp constructs the HTTP handler wrapped with the middleware chain and optional admission queue.
 func buildApp(cfg *config.Config, logger *slog.Logger) (http.Handler, *queue.Queue, error) {
-	h, q, _, _, err := buildAppWithRegistry(cfg, logger, nil)
+	h, q, _, _, _, err := buildAppWithRegistry(cfg, logger, nil)
 	return h, q, err
 }
 
 // buildAppWithRegistry constructs the HTTP handler wrapped with the middleware chain, metrics, tracing, and optional admission queue.
-func buildAppWithRegistry(cfg *config.Config, logger *slog.Logger, reg *prometheus.Registry) (http.Handler, *queue.Queue, *prometheus.Registry, func(context.Context) error, error) {
+func buildAppWithRegistry(cfg *config.Config, logger *slog.Logger, reg *prometheus.Registry) (http.Handler, *queue.Queue, *prometheus.Registry, func(context.Context) error, *proxy.Gateway, error) {
 	if reg == nil {
 		reg = prometheus.NewRegistry()
 	}
@@ -237,7 +250,7 @@ func buildAppWithRegistry(cfg *config.Config, logger *slog.Logger, reg *promethe
 			SampleRatio:  cfg.Observability.Tracing.SampleRatio,
 		})
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("setup tracing: %w", err)
+			return nil, nil, nil, nil, nil, fmt.Errorf("setup tracing: %w", err)
 		}
 		tracingShutdown = shutdown
 		tracer = tp.Tracer("github.com/syncronix-labs/aegora")
@@ -250,7 +263,7 @@ func buildAppWithRegistry(cfg *config.Config, logger *slog.Logger, reg *promethe
 	rc := toReliabilityConfig(cfg.Reliability, baseTransport)
 	gw, err := proxy.NewGateway(gwRoutes, rc)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("build gateway: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("build gateway: %w", err)
 	}
 
 	var gwHandler http.Handler = gw
@@ -346,7 +359,7 @@ func buildAppWithRegistry(cfg *config.Config, logger *slog.Logger, reg *promethe
 
 	chain := middleware.New(mws...)
 
-	return chain.Then(mux), q, reg, tracingShutdown, nil
+	return chain.Then(mux), q, reg, tracingShutdown, gw, nil
 }
 
 // buildHandler constructs the HTTP handler wrapped with the middleware chain.
@@ -391,7 +404,7 @@ func buildHandler(cfg *config.Config, logger *slog.Logger) (http.Handler, error)
 
 // buildHandlerWithRegistry constructs the HTTP handler using an explicitly provided Prometheus registry.
 func buildHandlerWithRegistry(cfg *config.Config, logger *slog.Logger, reg *prometheus.Registry) (http.Handler, error) {
-	h, q, _, _, err := buildAppWithRegistry(cfg, logger, reg)
+	h, q, _, _, _, err := buildAppWithRegistry(cfg, logger, reg)
 	if err != nil {
 		return nil, err
 	}
@@ -428,6 +441,7 @@ type gatewayReloader struct {
 	currentConfig atomic.Pointer[config.Config]
 	handlerPtr    atomic.Pointer[http.Handler]
 	queuePtr      atomic.Pointer[queue.Queue]
+	gatewayPtr    atomic.Pointer[proxy.Gateway]
 }
 
 func newGatewayReloader(
@@ -435,6 +449,7 @@ func newGatewayReloader(
 	initialCfg *config.Config,
 	initialHandler http.Handler,
 	initialQ *queue.Queue,
+	initialGateway *proxy.Gateway,
 	logger *slog.Logger,
 	reg *prometheus.Registry,
 	levelVar *slog.LevelVar,
@@ -448,6 +463,7 @@ func newGatewayReloader(
 	r.currentConfig.Store(initialCfg)
 	r.handlerPtr.Store(&initialHandler)
 	r.queuePtr.Store(initialQ)
+	r.gatewayPtr.Store(initialGateway)
 	return r
 }
 
@@ -471,7 +487,7 @@ func (r *gatewayReloader) Reload() ([]string, []string, error) {
 		return nil, nil, fmt.Errorf("config reload: %w", err)
 	}
 
-	newHandler, newQ, _, _, err := buildAppWithRegistry(newCfg, r.logger, r.reg)
+	newHandler, newQ, _, _, newGateway, err := buildAppWithRegistry(newCfg, r.logger, r.reg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("rebuild gateway: %w", err)
 	}
@@ -482,6 +498,12 @@ func (r *gatewayReloader) Reload() ([]string, []string, error) {
 
 	// Atomically swap the serving handler
 	r.handlerPtr.Store(&newHandler)
+
+	// Stop the previous gateway's active health checks; the new one owns probing from now on.
+	oldGateway := r.gatewayPtr.Swap(newGateway)
+	if oldGateway != nil {
+		oldGateway.Close()
+	}
 
 	oldQ := r.queuePtr.Swap(newQ)
 	if oldQ != nil {
@@ -619,7 +641,7 @@ func main() {
 	levelVar.Set(lvl)
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: levelVar}))
 
-	handler, q, reg, tracingShutdown, err := buildAppWithRegistry(cfg, logger, nil)
+	handler, q, reg, tracingShutdown, gateway, err := buildAppWithRegistry(cfg, logger, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error building handler: %v\n", err)
 		os.Exit(1)
@@ -628,7 +650,7 @@ func main() {
 		q.Start()
 	}
 
-	reloader := newGatewayReloader(configPath, cfg, handler, q, logger, reg, levelVar)
+	reloader := newGatewayReloader(configPath, cfg, handler, q, gateway, logger, reg, levelVar)
 
 	server := &http.Server{
 		Addr:         cfg.Server.Addr,

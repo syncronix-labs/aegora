@@ -1237,7 +1237,7 @@ admin:
 	levelVar.Set(lvl)
 	logger := slog.New(slog.NewJSONHandler(io.Discard, &slog.HandlerOptions{Level: levelVar}))
 
-	handler, q, reg, _, err := buildAppWithRegistry(cfg, logger, nil)
+	handler, q, reg, _, gateway, err := buildAppWithRegistry(cfg, logger, nil)
 	if err != nil {
 		t.Fatalf("buildAppWithRegistry: %v", err)
 	}
@@ -1245,7 +1245,7 @@ admin:
 		q.Start()
 	}
 
-	reloader := newGatewayReloader(configPath, cfg, handler, q, logger, reg, levelVar)
+	reloader := newGatewayReloader(configPath, cfg, handler, q, gateway, logger, reg, levelVar)
 	rootHandler := reloader.RootHandler()
 
 	routesFn := func() []admin.RouteInfo {
@@ -1438,12 +1438,12 @@ observability:
 	}
 
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	handler, q, reg, _, err := buildAppWithRegistry(cfg, logger, nil)
+	handler, q, reg, _, gateway, err := buildAppWithRegistry(cfg, logger, nil)
 	if err != nil {
 		t.Fatalf("buildAppWithRegistry: %v", err)
 	}
 
-	reloader := newGatewayReloader(configPath, cfg, handler, q, logger, reg, nil)
+	reloader := newGatewayReloader(configPath, cfg, handler, q, gateway, logger, reg, nil)
 	rootHandler := reloader.RootHandler()
 
 	// Initial request succeeds
@@ -1519,12 +1519,12 @@ admin:
 	}
 
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	handler, q, reg, _, err := buildAppWithRegistry(cfg, logger, nil)
+	handler, q, reg, _, gateway, err := buildAppWithRegistry(cfg, logger, nil)
 	if err != nil {
 		t.Fatalf("buildAppWithRegistry: %v", err)
 	}
 
-	reloader := newGatewayReloader(configPath, cfg, handler, q, logger, reg, nil)
+	reloader := newGatewayReloader(configPath, cfg, handler, q, gateway, logger, reg, nil)
 
 	// Change restart-required sections: server.addr, metrics_addr, admin.addr, tracing exporter
 	changedYAML := `

@@ -8,6 +8,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/syncronix-labs/aegora/internal/httperr"
@@ -54,6 +55,11 @@ type ReliabilityConfig struct {
 type Gateway struct {
 	router *Router
 	routes map[*RouteConfig]*routeEntry
+
+	// healthCtx bounds the lifetime of the active health-check goroutines; Close stops them.
+	healthCtx    context.Context
+	healthCancel context.CancelFunc
+	healthWG     sync.WaitGroup
 }
 
 // NewGateway constructs a Gateway with a compiled Router, one upstream Pool per route,
@@ -100,6 +106,10 @@ func NewGateway(routes []RouteConfig, rc ReliabilityConfig) (*Gateway, error) {
 	routeMap := make(map[*RouteConfig]*routeEntry, len(router.routes))
 	for i := range router.routes {
 		r := &router.routes[i]
+
+		if err := r.HealthCheck.Validate(); err != nil {
+			return nil, fmt.Errorf("gateway: route %q health check: %w", r.Name, err)
+		}
 
 		pool, err := NewPool(r.Targets, r.LBPolicy)
 		if err != nil {
@@ -159,10 +169,36 @@ func NewGateway(routes []RouteConfig, rc ReliabilityConfig) (*Gateway, error) {
 		}
 	}
 
-	return &Gateway{
-		router: router,
-		routes: routeMap,
-	}, nil
+	healthCtx, healthCancel := context.WithCancel(context.Background())
+	gw := &Gateway{
+		router:       router,
+		routes:       routeMap,
+		healthCtx:    healthCtx,
+		healthCancel: healthCancel,
+	}
+
+	for _, entry := range routeMap {
+		if entry.config.HealthCheck == nil {
+			continue
+		}
+		gw.healthWG.Add(1)
+		go func(entry *routeEntry) {
+			defer gw.healthWG.Done()
+			gw.runHealthChecks(healthCtx, entry)
+		}(entry)
+	}
+
+	return gw, nil
+}
+
+// Close stops the gateway's active health-check goroutines and waits for them to exit.
+// It is safe to call more than once and does not interrupt in-flight client requests.
+func (g *Gateway) Close() {
+	if g == nil || g.healthCancel == nil {
+		return
+	}
+	g.healthCancel()
+	g.healthWG.Wait()
 }
 
 // Router returns the underlying Router instance used by the gateway for route matching.

@@ -21,6 +21,7 @@ type RouteConfig struct {
 	Targets          []string
 	StripPrefix      string
 	LBPolicy         string
+	HealthCheck      *HealthCheckConfig
 }
 
 // Router matches incoming HTTP requests to configured backend routes based on

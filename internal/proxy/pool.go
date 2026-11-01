@@ -20,7 +20,10 @@ type Pool struct {
 	inFlight       []atomic.Int64
 	mu             sync.RWMutex
 	unhealthyUntil []time.Time
-	cooldown       time.Duration
+	// activeUp is the active health-check verdict per target. Targets start up and are
+	// only changed by an active checker; routes without health checks never touch it.
+	activeUp []bool
+	cooldown time.Duration
 }
 
 // NewPool parses target URLs, validates the load balancing policy, and initializes
@@ -49,11 +52,17 @@ func NewPool(targets []string, policy string) (*Pool, error) {
 		return nil, fmt.Errorf("pool: unsupported load balancing policy %q", policy)
 	}
 
+	activeUp := make([]bool, len(parsedTargets))
+	for i := range activeUp {
+		activeUp[i] = true
+	}
+
 	return &Pool{
 		targets:        parsedTargets,
 		policy:         policy,
 		inFlight:       make([]atomic.Int64, len(parsedTargets)),
 		unhealthyUntil: make([]time.Time, len(parsedTargets)),
+		activeUp:       activeUp,
 		cooldown:       30 * time.Second,
 	}, nil
 }
@@ -150,11 +159,35 @@ func (p *Pool) ReportSuccess(index int) {
 	}
 }
 
+// SetActiveHealth records the active health-check verdict for a target. Reporting a target
+// up also clears its passive failure cooldown: the successful probe is the recovery signal,
+// so a recovered backend serves traffic again without waiting for the cooldown to expire.
+// Reporting a target down keeps it out of rotation until a later probe marks it up.
+func (p *Pool) SetActiveHealth(index int, up bool) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if index < 0 || index >= len(p.activeUp) {
+		return
+	}
+	p.activeUp[index] = up
+	if up {
+		p.unhealthyUntil[index] = time.Time{}
+	}
+}
+
 func (p *Pool) isHealthy(index int) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
 	if index < 0 || index >= len(p.unhealthyUntil) {
+		return false
+	}
+
+	if !p.activeUp[index] {
 		return false
 	}
 

@@ -69,7 +69,38 @@ An array of route definitions. At least one route is required.
 | `targets` | []string | none (required) | Yes | List of upstream target base URLs (for example, `["http://backend-1:8081", "http://backend-2:8082"]`). Must be valid URLs with scheme and host. |
 | `strip_prefix` | string | `""` | Yes | Optional path prefix to remove before forwarding to upstreams. If specified, must start with `"/"`. |
 | `lb` | string | `"round_robin"` | Yes | Load balancing policy across targets: `"round_robin"` or `"least_connections"`. |
+| `health_check` | object | none (disabled) | Yes | Optional active health checking for this route's targets. See [Active Health Checking](#active-health-checking). |
 | `rate_limit` | object | none (inherits global) | Yes | Optional per-route override of the global `rate_limit` block. See [Per-Route Overrides](#per-route-overrides). |
+
+### Active Health Checking
+
+By default, target health is passive: a dead backend is discovered by a failed client request, and it stays out of rotation for the failure cooldown. A route can opt into active checks that probe each target on a fixed interval, so a down target is removed before clients pay for it and a recovered target is restored without waiting for the cooldown.
+
+```yaml
+routes:
+  - name: "api"
+    path_prefix: "/api"
+    targets: ["http://api-1:8080", "http://api-2:8080"]
+    health_check:
+      enabled: true
+      path: "/livez"
+      interval: "10s"
+      timeout: "2s"
+```
+
+| Field | Type | Default | Reloadable | Description |
+|---|---|---|---|---|
+| `enabled` | bool | `false` | Yes | Enables active probing for the route's targets. |
+| `path` | string | `"/livez"` | Yes | Request path probed on each target. Must start with `"/"`. |
+| `interval` | Duration | `"10s"` | Yes | Time between probe rounds. Must be positive. |
+| `timeout` | Duration | `"2s"` | Yes | Per-probe request timeout. Must be positive and shorter than `interval`. |
+
+Behavior:
+- A probe is a `GET` to `path` on each target. A `2xx` response marks the target up; a timeout, transport error, or any other status marks it down.
+- The first probe round runs immediately after startup or reload, so a target that is already down does not receive client traffic.
+- A target is selected only when both mechanisms agree: it must be up actively and not in a passive failure cooldown. A successful active probe also clears the passive cooldown, so recovery does not wait for the cooldown timer; a client-visible failure still removes a target immediately.
+- If every target is down, requests to the route return `502` with `all upstreams unavailable` until a probe succeeds.
+- Probing is per route and stops when the gateway is replaced by a hot reload.
 
 ---
 
