@@ -19,6 +19,7 @@ type RouteConfig struct {
 	Methods          []string
 	Headers          map[string]string
 	Targets          []string
+	Weights          map[string]int
 	StripPrefix      string
 	LBPolicy         string
 }

@@ -189,14 +189,17 @@ type ServerConfig struct {
 
 // RouteConfig specifies upstream routing rules and target destinations.
 type RouteConfig struct {
-	Name        string            `yaml:"name"`
-	PathPrefix  string            `yaml:"path_prefix"`
-	PathRegex   string            `yaml:"path_regex,omitempty"`
-	Methods     []string          `yaml:"methods,omitempty"`
-	Headers     map[string]string `yaml:"headers,omitempty"`
-	Targets     []string          `yaml:"targets"`
-	StripPrefix string            `yaml:"strip_prefix,omitempty"`
-	LB          string            `yaml:"lb,omitempty"`
+	Name       string            `yaml:"name"`
+	PathPrefix string            `yaml:"path_prefix"`
+	PathRegex  string            `yaml:"path_regex,omitempty"`
+	Methods    []string          `yaml:"methods,omitempty"`
+	Headers    map[string]string `yaml:"headers,omitempty"`
+	Targets    []string          `yaml:"targets"`
+	// Weights optionally assigns a relative traffic weight to each target URL.
+	// Only valid with the round_robin policy; omitted targets default to 1.
+	Weights     map[string]int `yaml:"weights,omitempty"`
+	StripPrefix string         `yaml:"strip_prefix,omitempty"`
+	LB          string         `yaml:"lb,omitempty"`
 	// RateLimit optionally overrides the global rate_limit block for this route.
 	RateLimit *RouteRateLimitConfig `yaml:"rate_limit,omitempty"`
 }
@@ -359,6 +362,24 @@ func (c *Config) Validate() error {
 			route.LB = "round_robin"
 		} else if route.LB != "round_robin" && route.LB != "least_connections" {
 			return fmt.Errorf("config: routes[%d].lb: must be one of round_robin, least_connections; got %q", i, route.LB)
+		}
+
+		if len(route.Weights) > 0 {
+			if route.LB != "round_robin" {
+				return fmt.Errorf("config: routes[%d].weights: only supported with lb %q, got %q", i, "round_robin", route.LB)
+			}
+			knownTargets := make(map[string]struct{}, len(route.Targets))
+			for _, target := range route.Targets {
+				knownTargets[target] = struct{}{}
+			}
+			for target, weight := range route.Weights {
+				if _, ok := knownTargets[target]; !ok {
+					return fmt.Errorf("config: routes[%d].weights[%q]: target is not listed in routes[%d].targets", i, target, i)
+				}
+				if weight <= 0 {
+					return fmt.Errorf("config: routes[%d].weights[%q]: must be positive, got %d", i, target, weight)
+				}
+			}
 		}
 	}
 
