@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/syncronix-labs/aegora/internal/httperr"
+	"github.com/syncronix-labs/aegora/internal/metrics"
 	"github.com/syncronix-labs/aegora/internal/middleware"
 )
 
@@ -403,5 +404,6 @@ func (q *Queue) dispatchLoop() {
 }
 
 func writeOverloadedJSON(w http.ResponseWriter, r *http.Request) {
+	metrics.MarkQueueDropped(w.Header())
 	httperr.Write(w, http.StatusServiceUnavailable, "server overloaded", middleware.GetRequestID(r))
 }
