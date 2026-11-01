@@ -129,11 +129,11 @@ func (t *TieredCache) Get(key string) (*Entry, bool) {
 // Put writes the entry through to both L1 (in-memory) and L2 (Redis).
 //
 // Each tier enforces its own TTL, capped by the lifetime the entry was given:
-// - L1 is stored with l1TTL.
-// - L2 entry has ExpiresAt stamped as now + l2TTL, and is stored with Redis TTL = l2TTL.
-// - Neither may exceed the remaining lifetime of e, so a response the origin
-//   allowed to live for five seconds is not kept for five minutes in L2.
-// - An entry that has already expired is not stored at all.
+//   - L1 is stored with l1TTL.
+//   - L2 entry has ExpiresAt stamped as now + l2TTL, and is stored with Redis TTL = l2TTL.
+//   - Neither may exceed the remaining lifetime of e, so a response the origin
+//     allowed to live for five seconds is not kept for five minutes in L2.
+//   - An entry that has already expired is not stored at all.
 //
 // Fail-Quiet Rationale:
 // L2 write errors (serialization failure, connection error, Redis outage) are silently
