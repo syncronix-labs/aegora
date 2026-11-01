@@ -194,6 +194,10 @@ The Dockerfile accepts a `VERSION` build argument (default `dev`) that is stampe
 docker build -f deployments/Dockerfile --build-arg VERSION=v0.1.0 -t aegora:v0.1.0 .
 ```
 
+### Container Health Check
+
+The image defines a `HEALTHCHECK` that probes `http://127.0.0.1:8080/livez` from inside the container using the BusyBox `wget` applet, which is already part of the Alpine base image. The probe assumes the gateway listens on port `8080` inside the container: if you change `server.addr` to another port, override the image health check to point at that port, or the container will report `unhealthy` while the gateway is still serving traffic. A 10-second start period lets a slow start finish before failed probes count against the retry budget.
+
 ### Verify Operations
 
 Send a request through the gateway to verify routing and load balancing:
