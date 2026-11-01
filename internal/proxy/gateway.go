@@ -215,6 +215,14 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		pool:  entry.pool,
 		index: idx,
 	})
+	// The timeout bounds the entire outbound exchange, including the response
+	// body transfer. A fired deadline surfaces as a transport error, so the
+	// retry policy and the existing 502 handler treat it like any other.
+	if entry.config.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, entry.config.Timeout)
+		defer cancel()
+	}
 
 	outReq := req.Clone(ctx)
 	outReq.URL.Scheme = targetURL.Scheme
