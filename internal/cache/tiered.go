@@ -111,13 +111,14 @@ func (t *TieredCache) Get(key string) (*Entry, bool) {
 		return nil, false
 	}
 
-	// 5. Backfill into L1 (re-stamped to l1TTL)
+	// 5. Backfill into L1, capped at whatever freshness the L2 copy has left so
+	// the two tiers cannot disagree about when the response stops being valid.
 	backfill := &Entry{
 		Status:    entry.Status,
 		Header:    entry.Header.Clone(),
 		Body:      bytes.Clone(entry.Body),
 		StoredAt:  entry.StoredAt,
-		ExpiresAt: time.Now().Add(t.l1TTL),
+		ExpiresAt: time.Now().Add(min(time.Until(entry.ExpiresAt), t.l1TTL)),
 		ETag:      entry.ETag,
 	}
 	t.l1.Put(key, backfill)
@@ -127,9 +128,12 @@ func (t *TieredCache) Get(key string) (*Entry, bool) {
 
 // Put writes the entry through to both L1 (in-memory) and L2 (Redis).
 //
-// Each tier enforces its own TTL:
-// - L1 is stored with l1TTL.
-// - L2 entry has ExpiresAt stamped as now + l2TTL, and is stored with Redis TTL = l2TTL.
+// Each tier enforces its own TTL, capped by the lifetime the entry was given:
+//   - L1 is stored with l1TTL.
+//   - L2 entry has ExpiresAt stamped as now + l2TTL, and is stored with Redis TTL = l2TTL.
+//   - Neither may exceed the remaining lifetime of e, so a response the origin
+//     allowed to live for five seconds is not kept for five minutes in L2.
+//   - An entry that has already expired is not stored at all.
 //
 // Fail-Quiet Rationale:
 // L2 write errors (serialization failure, connection error, Redis outage) are silently
@@ -140,13 +144,21 @@ func (t *TieredCache) Put(key string, e *Entry) {
 		return
 	}
 
+	// Neither tier may outlive the entry it was given: the caller has already
+	// capped that lifetime at whatever the origin allowed, and a tier that
+	// ignored it would serve the response past its freshness.
+	lifetime := time.Until(e.ExpiresAt)
+	if lifetime <= 0 {
+		return
+	}
+
 	// 1. Write-through to L1 with l1TTL
 	l1Entry := &Entry{
 		Status:    e.Status,
 		Header:    e.Header.Clone(),
 		Body:      bytes.Clone(e.Body),
 		StoredAt:  e.StoredAt,
-		ExpiresAt: time.Now().Add(t.l1TTL),
+		ExpiresAt: time.Now().Add(min(lifetime, t.l1TTL)),
 		ETag:      e.ETag,
 	}
 	t.l1.Put(key, l1Entry)
@@ -156,12 +168,13 @@ func (t *TieredCache) Put(key string, e *Entry) {
 	}
 
 	// 2. Write-through to L2 with l2TTL
+	l2Lifetime := min(lifetime, t.l2TTL)
 	l2Entry := &Entry{
 		Status:    e.Status,
 		Header:    e.Header.Clone(),
 		Body:      bytes.Clone(e.Body),
 		StoredAt:  e.StoredAt,
-		ExpiresAt: time.Now().Add(t.l2TTL),
+		ExpiresAt: time.Now().Add(l2Lifetime),
 		ETag:      e.ETag,
 	}
 
@@ -172,7 +185,7 @@ func (t *TieredCache) Put(key string, e *Entry) {
 	}
 
 	redisKey := t.keyPrefix + key
-	_ = t.l2.Set(context.Background(), redisKey, buf.Bytes(), t.l2TTL).Err()
+	_ = t.l2.Set(context.Background(), redisKey, buf.Bytes(), l2Lifetime).Err()
 }
 
 // Invalidate deletes the cache entry from both L1 and L2 tiers.
