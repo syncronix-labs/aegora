@@ -1589,3 +1589,34 @@ func requireJSONError(t *testing.T, rec *httptest.ResponseRecorder, wantError st
 		t.Fatal("expected a non-empty request_id in the error body")
 	}
 }
+
+func TestBuildHandler_CORS(t *testing.T) {
+	cfg := newTestConfig()
+	cfg.CORS = config.CORSConfig{
+		Enabled:        true,
+		AllowedOrigins: []string{"https://app.example.com"},
+		AllowedMethods: []string{http.MethodGet, http.MethodOptions},
+	}
+
+	handler, q, err := buildApp(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("buildApp: %v", err)
+	}
+	if q != nil {
+		q.Start()
+		defer q.Stop()
+	}
+
+	req := httptest.NewRequest(http.MethodOptions, "/api", nil)
+	req.Header.Set("Origin", "https://app.example.com")
+	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://app.example.com" {
+		t.Fatalf("allow-origin = %q", got)
+	}
+}

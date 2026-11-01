@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -156,6 +157,48 @@ func TestValidate_MutatedNegativeCases(t *testing.T) {
 			wantFieldInErr: "server.max_request_body_bytes",
 		},
 		{
+			name: "cors enabled without origins",
+			mutate: func(c *config.Config) {
+				c.CORS.Enabled = true
+			},
+			wantFieldInErr: "cors.allowed_origins",
+		},
+		{
+			name: "cors empty origin",
+			mutate: func(c *config.Config) {
+				c.CORS.Enabled = true
+				c.CORS.AllowedOrigins = []string{"https://app.example.com", " "}
+			},
+			wantFieldInErr: "cors.allowed_origins[1]",
+		},
+		{
+			name: "cors empty method",
+			mutate: func(c *config.Config) {
+				c.CORS.Enabled = true
+				c.CORS.AllowedOrigins = []string{"https://app.example.com"}
+				c.CORS.AllowedMethods = []string{"GET", ""}
+			},
+			wantFieldInErr: "cors.allowed_methods[1]",
+		},
+		{
+			name: "cors empty header",
+			mutate: func(c *config.Config) {
+				c.CORS.Enabled = true
+				c.CORS.AllowedOrigins = []string{"https://app.example.com"}
+				c.CORS.AllowedHeaders = []string{" "}
+			},
+			wantFieldInErr: "cors.allowed_headers[0]",
+		},
+		{
+			name: "cors negative max age",
+			mutate: func(c *config.Config) {
+				c.CORS.Enabled = true
+				c.CORS.AllowedOrigins = []string{"https://app.example.com"}
+				c.CORS.MaxAge = -1
+			},
+			wantFieldInErr: "cors.max_age",
+		},
+		{
 			name: "zero routes configured",
 			mutate: func(c *config.Config) {
 				c.Routes = nil
@@ -262,6 +305,48 @@ func TestLoad_MissingFile(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "config: read file") {
 		t.Fatalf("expected error to mention reading file, got: %v", err)
+	}
+}
+
+func TestLoad_CORSYAML(t *testing.T) {
+	const raw = `
+server:
+  addr: "127.0.0.1:8080"
+  read_timeout: "15s"
+  write_timeout: "30s"
+  idle_timeout: "60s"
+routes:
+  - name: api
+    path_prefix: /api
+    targets:
+      - "http://127.0.0.1:8081"
+observability:
+  log_level: info
+cors:
+  enabled: true
+  allowed_origins:
+    - "https://app.example.com"
+  allowed_methods: ["GET", "POST"]
+  allowed_headers: ["Authorization"]
+  max_age: "1h"
+`
+	path := filepath.Join(t.TempDir(), "cors.yaml")
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("config.Load() unexpected error: %v", err)
+	}
+	if !cfg.CORS.Enabled {
+		t.Fatal("CORS.Enabled = false")
+	}
+	if len(cfg.CORS.AllowedOrigins) != 1 || cfg.CORS.AllowedOrigins[0] != "https://app.example.com" {
+		t.Fatalf("AllowedOrigins = %v", cfg.CORS.AllowedOrigins)
+	}
+	if cfg.CORS.MaxAge.Duration() != time.Hour {
+		t.Fatalf("MaxAge = %v", cfg.CORS.MaxAge.Duration())
 	}
 }
 

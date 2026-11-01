@@ -225,3 +225,33 @@ Configures the administrative management HTTP server.
 Environment variable overrides:
 - `AEGORA_ADMIN_ENABLED`
 - `AEGORA_ADMIN_ADDR`
+
+---
+
+## 10. CORS (`cors`)
+
+Configures cross-origin response headers and preflight handling for browser clients. Disabled by default; when disabled, responses are unchanged.
+
+| Field | Type | Default | Reloadable | Description |
+|---|---|---|---|---|
+| `enabled` | bool | `false` | Yes | Enables CORS headers and preflight handling. |
+| `allowed_origins` | []string | none (required if enabled) | Yes | Exact origins allowed (for example, `"https://app.example.com"`), or `"*"` for any origin. |
+| `allowed_methods` | []string | `GET, POST, PUT, PATCH, DELETE, OPTIONS` | Yes | Methods advertised in `Access-Control-Allow-Methods` on preflight. |
+| `allowed_headers` | []string | echo requested | Yes | Headers advertised in `Access-Control-Allow-Headers`. When empty, the request's `Access-Control-Request-Headers` value is echoed. |
+| `max_age` | Duration | `0` | Yes | How long a browser may cache a preflight result (for example, `"1h"`). Emitted as `Access-Control-Max-Age` in seconds; zero omits the header. |
+
+Behavior:
+- Preflight `OPTIONS` requests (those carrying `Access-Control-Request-Method`) are answered with `204` before shedding, rate limiting and queue admission, so they never consume admission capacity.
+- A request from an origin that is not allowed passes through unchanged without CORS headers; the browser then blocks the response.
+- Restricted origins receive `Vary: Origin` so a cached response is never served to a different origin.
+- `Access-Control-Allow-Credentials` is not set: this implementation covers public APIs, not cookie-authenticated cross-origin requests.
+
+```yaml
+cors:
+  enabled: true
+  allowed_origins:
+    - "https://app.example.com"
+  allowed_methods: ["GET", "POST", "OPTIONS"]
+  allowed_headers: ["Authorization", "Content-Type"]
+  max_age: "1h"
+```
