@@ -57,6 +57,16 @@ type Config struct {
 	Shedding      SheddingConfig      `yaml:"shedding,omitempty"`
 	Cache         CacheConfig         `yaml:"cache,omitempty"`
 	Admin         AdminConfig         `yaml:"admin,omitempty"`
+	CORS          CORSConfig          `yaml:"cors,omitempty"`
+}
+
+// CORSConfig configures cross-origin response headers and preflight handling.
+type CORSConfig struct {
+	Enabled        bool     `yaml:"enabled"`
+	AllowedOrigins []string `yaml:"allowed_origins,omitempty"`
+	AllowedMethods []string `yaml:"allowed_methods,omitempty"`
+	AllowedHeaders []string `yaml:"allowed_headers,omitempty"`
+	MaxAge         Duration `yaml:"max_age,omitempty"`
 }
 
 // AdminConfig configures the dedicated administrative HTTP server.
@@ -476,6 +486,30 @@ func (c *Config) Validate() error {
 		}
 		if c.Cache.L2TTL <= 0 {
 			return fmt.Errorf("config: cache.l2_ttl: must be positive, got %s", c.Cache.L2TTL)
+		}
+	}
+
+	if c.CORS.Enabled {
+		if len(c.CORS.AllowedOrigins) == 0 {
+			return errors.New("config: cors.allowed_origins: must list at least one origin when cors is enabled")
+		}
+		for i, origin := range c.CORS.AllowedOrigins {
+			if strings.TrimSpace(origin) == "" {
+				return fmt.Errorf("config: cors.allowed_origins[%d]: cannot be empty", i)
+			}
+		}
+		for i, method := range c.CORS.AllowedMethods {
+			if strings.TrimSpace(method) == "" {
+				return fmt.Errorf("config: cors.allowed_methods[%d]: cannot be empty", i)
+			}
+		}
+		for i, header := range c.CORS.AllowedHeaders {
+			if strings.TrimSpace(header) == "" {
+				return fmt.Errorf("config: cors.allowed_headers[%d]: cannot be empty", i)
+			}
+		}
+		if c.CORS.MaxAge < 0 {
+			return fmt.Errorf("config: cors.max_age: must be non-negative, got %s", c.CORS.MaxAge)
 		}
 	}
 
