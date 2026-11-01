@@ -141,6 +141,7 @@ Config loads once at startup from `aegora.yaml`. Edits take effect only after `P
 - **Path Matching**: Prefix and regex route matching with HTTP method and header constraints.
 - **Load Balancing**: Round-robin and least-connections upstream selection.
 - **Passive Health Checking**: Target failure detection with automatic recovery.
+- **Active Health Checking**: Opt-in periodic probes that remove failing targets before client traffic reaches them and restore recovered ones without waiting for a cooldown.
 - **Path Rewriting**: Optional prefix stripping before forwarding to upstreams.
 
 ### Resilience

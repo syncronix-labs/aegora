@@ -224,6 +224,42 @@ func TestValidate_MutatedNegativeCases(t *testing.T) {
 			wantFieldInErr: "routes[0].lb",
 		},
 		{
+			name: "health check path without leading slash",
+			mutate: func(c *config.Config) {
+				c.Routes[0].HealthCheck = &config.HealthCheckConfig{
+					Enabled:  true,
+					Path:     "livez",
+					Interval: config.Duration(10 * time.Second),
+					Timeout:  config.Duration(2 * time.Second),
+				}
+			},
+			wantFieldInErr: "routes[0].health_check.path",
+		},
+		{
+			name: "negative health check interval",
+			mutate: func(c *config.Config) {
+				c.Routes[0].HealthCheck = &config.HealthCheckConfig{
+					Enabled:  true,
+					Path:     "/livez",
+					Interval: config.Duration(-time.Second),
+					Timeout:  config.Duration(2 * time.Second),
+				}
+			},
+			wantFieldInErr: "routes[0].health_check.interval",
+		},
+		{
+			name: "health check timeout not shorter than interval",
+			mutate: func(c *config.Config) {
+				c.Routes[0].HealthCheck = &config.HealthCheckConfig{
+					Enabled:  true,
+					Path:     "/livez",
+					Interval: config.Duration(time.Second),
+					Timeout:  config.Duration(time.Second),
+				}
+			},
+			wantFieldInErr: "routes[0].health_check.timeout",
+		},
+		{
 			name: "invalid metrics_addr missing port",
 			mutate: func(c *config.Config) {
 				c.Observability.MetricsAddr = "127.0.0.1"
@@ -1600,5 +1636,46 @@ rate_limit:
 	}
 	if cfg.Routes[2].HasRateLimitOverride() {
 		t.Fatal("api route should have no override")
+	}
+}
+
+func TestLoad_HealthCheckDefaultsYAML(t *testing.T) {
+	path := t.TempDir() + "/aegora.yaml"
+	data := `
+server:
+  addr: "127.0.0.1:8080"
+  read_timeout: "15s"
+  write_timeout: "30s"
+  idle_timeout: "60s"
+routes:
+  - name: "api"
+    path_prefix: "/api"
+    targets: ["http://127.0.0.1:8081"]
+    health_check:
+      enabled: true
+observability:
+  log_level: "info"
+`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("config.Load() unexpected error: %v", err)
+	}
+
+	hc := cfg.Routes[0].HealthCheck
+	if hc == nil || !hc.Enabled {
+		t.Fatalf("health check = %+v, want enabled", hc)
+	}
+	if hc.Path != "/livez" {
+		t.Fatalf("path = %q, want /livez", hc.Path)
+	}
+	if hc.Interval != config.Duration(10*time.Second) {
+		t.Fatalf("interval = %s, want 10s", hc.Interval)
+	}
+	if hc.Timeout != config.Duration(2*time.Second) {
+		t.Fatalf("timeout = %s, want 2s", hc.Timeout)
 	}
 }

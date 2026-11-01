@@ -197,8 +197,19 @@ type RouteConfig struct {
 	Targets     []string          `yaml:"targets"`
 	StripPrefix string            `yaml:"strip_prefix,omitempty"`
 	LB          string            `yaml:"lb,omitempty"`
+	// HealthCheck optionally enables active health checking for this route's targets.
+	HealthCheck *HealthCheckConfig `yaml:"health_check,omitempty"`
 	// RateLimit optionally overrides the global rate_limit block for this route.
 	RateLimit *RouteRateLimitConfig `yaml:"rate_limit,omitempty"`
+}
+
+// HealthCheckConfig configures active health checking for a route.
+// Interval, Path, and Timeout default to 10s, "/livez", and 2s when enabled.
+type HealthCheckConfig struct {
+	Enabled  bool     `yaml:"enabled"`
+	Path     string   `yaml:"path,omitempty"`
+	Interval Duration `yaml:"interval,omitempty"`
+	Timeout  Duration `yaml:"timeout,omitempty"`
 }
 
 // TracingConfig configures OpenTelemetry distributed tracing.
@@ -359,6 +370,32 @@ func (c *Config) Validate() error {
 			route.LB = "round_robin"
 		} else if route.LB != "round_robin" && route.LB != "least_connections" {
 			return fmt.Errorf("config: routes[%d].lb: must be one of round_robin, least_connections; got %q", i, route.LB)
+		}
+
+		if hc := route.HealthCheck; hc != nil && hc.Enabled {
+			if hc.Path == "" {
+				hc.Path = "/livez"
+			} else if !strings.HasPrefix(hc.Path, "/") {
+				return fmt.Errorf("config: routes[%d].health_check.path: must start with %q, got %q", i, "/", hc.Path)
+			}
+
+			if hc.Interval < 0 {
+				return fmt.Errorf("config: routes[%d].health_check.interval: must not be negative, got %s", i, hc.Interval)
+			}
+			if hc.Interval == 0 {
+				hc.Interval = Duration(10 * time.Second)
+			}
+
+			if hc.Timeout < 0 {
+				return fmt.Errorf("config: routes[%d].health_check.timeout: must not be negative, got %s", i, hc.Timeout)
+			}
+			if hc.Timeout == 0 {
+				hc.Timeout = Duration(2 * time.Second)
+			}
+
+			if hc.Timeout >= hc.Interval {
+				return fmt.Errorf("config: routes[%d].health_check.timeout: %s must be shorter than interval %s", i, hc.Timeout, hc.Interval)
+			}
 		}
 	}
 
