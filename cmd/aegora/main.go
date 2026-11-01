@@ -31,6 +31,7 @@ import (
 	"github.com/syncronix-labs/aegora/internal/proxy"
 	"github.com/syncronix-labs/aegora/internal/queue"
 	"github.com/syncronix-labs/aegora/internal/ratelimit"
+	"github.com/syncronix-labs/aegora/internal/readiness"
 	"github.com/syncronix-labs/aegora/internal/reliability"
 	"github.com/syncronix-labs/aegora/internal/shedding"
 	"github.com/syncronix-labs/aegora/internal/tracing"
@@ -74,7 +75,12 @@ func parseLogLevel(level string) (slog.Level, error) {
 
 // buildMux registers health endpoints and delegates all other incoming traffic
 // to the dynamic reverse proxy gateway.
-func buildMux(gw http.Handler) *http.ServeMux {
+//
+// /livez answers only "the process is up", so it stays static. /readyz answers
+// "should this instance take traffic", which depends on the dependencies the
+// running configuration actually uses, so it is driven by the readiness set
+// collected alongside the handler.
+func buildMux(gw http.Handler, ready *readiness.Set) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) {
@@ -83,11 +89,7 @@ func buildMux(gw http.Handler) *http.ServeMux {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
+	mux.Handle("GET /readyz", ready.Handler(readiness.DefaultTimeout))
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/livez" || r.URL.Path == "/readyz" {
@@ -225,6 +227,10 @@ func buildAppWithRegistry(cfg *config.Config, logger *slog.Logger, reg *promethe
 		reg = prometheus.NewRegistry()
 	}
 
+	// Dependencies are collected as the configuration is applied, so a feature
+	// that is switched off contributes no check to /readyz.
+	ready := readiness.NewSet()
+
 	var tracingShutdown func(context.Context) error
 	var tracer trace.Tracer
 	var baseTransport http.RoundTripper = proxy.NewTransport()
@@ -282,21 +288,29 @@ func buildAppWithRegistry(cfg *config.Config, logger *slog.Logger, reg *promethe
 				Addr: cfg.Cache.RedisAddr,
 			})
 			pingCtx, pingCancel := context.WithTimeout(context.Background(), 2*time.Second)
-			if err := rdb.Ping(pingCtx).Err(); err != nil {
-				pingCancel()
+			pingErr := rdb.Ping(pingCtx).Err()
+			pingCancel()
+
+			if pingErr != nil {
 				logger.Warn("redis l2 cache unreachable at startup; degrading to l1-only",
 					slog.String("addr", cfg.Cache.RedisAddr),
-					slog.String("error", err.Error()),
+					slog.String("error", pingErr.Error()),
 				)
-				_ = rdb.Close()
 			} else {
-				pingCancel()
 				logger.Info("redis l2 cache connected",
 					slog.String("addr", cfg.Cache.RedisAddr),
 					slog.Duration("l2_ttl", cfg.Cache.L2TTL.Duration()),
 				)
 				cacheStore = cache.NewTieredCache(l1Cache, rdb, cfg.Cache.TTL.Duration(), cfg.Cache.L2TTL.Duration())
 			}
+
+			// The client stays open either way: a failed startup ping degrades the
+			// cache, but the configured dependency is still one this instance asked
+			// for, and an operator watching /readyz has to be able to see it down.
+			// The cache has already degraded, so a probe failure costs nothing here.
+			ready.Add("redis", func(ctx context.Context) error {
+				return rdb.Ping(ctx).Err()
+			})
 		}
 
 		// Note: CacheMiddleware requires zero modifications to support TieredCache
@@ -304,7 +318,7 @@ func buildAppWithRegistry(cfg *config.Config, logger *slog.Logger, reg *promethe
 		gwHandler = cache.CacheMiddleware(cacheStore, cfg.Cache.TTL.Duration(), cfg.Cache.MaxBodyBytes)(gwHandler)
 	}
 
-	mux := buildMux(gwHandler)
+	mux := buildMux(gwHandler, ready)
 
 	mws := []middleware.Middleware{
 		middleware.Recovery(logger),
