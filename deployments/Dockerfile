@@ -24,8 +24,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # Final runtime stage
 FROM alpine:3.21
 
-# Install runtime dependencies: ca-certificates for upstream HTTPS and wget for container health probes
-RUN apk --no-cache add ca-certificates wget tzdata
+# Install runtime dependencies: ca-certificates for upstream HTTPS and tzdata for log timestamps.
+# The health probe uses the wget applet that BusyBox already provides in the Alpine base image.
+RUN apk --no-cache add ca-certificates tzdata
 
 # Create dedicated non-root runtime group and user
 RUN addgroup -g 10001 -S aegora && \
@@ -40,8 +41,11 @@ EXPOSE 8080 9090 9091
 # Non-root security context
 USER 10001:10001
 
-# Periodic health check verifying data plane liveness
-HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
+# Periodic health check verifying data plane liveness. The probe targets port 8080 inside the
+# container, so if server.addr is changed the image health check must be overridden to match.
+# --start-period gives a slow start (for example waiting on Redis) time to finish before
+# failed probes count against the retry budget.
+HEALTHCHECK --interval=10s --start-period=10s --timeout=3s --retries=3 \
     CMD wget --spider -q http://127.0.0.1:8080/livez || exit 1
 
 # Default command pointing to container config mount point
