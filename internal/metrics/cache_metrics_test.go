@@ -27,7 +27,7 @@ func TestCacheObserver_CountsAMissThenAHit(t *testing.T) {
 	m := New(prometheus.NewRegistry())
 	store := cache.NewCache(10, 1024)
 
-	backend := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("payload"))
 	})
@@ -58,7 +58,7 @@ func TestCacheObserver_UsesTheRouteItWasGiven(t *testing.T) {
 	m := New(prometheus.NewRegistry())
 	store := cache.NewCache(10, 1024)
 
-	backend := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("payload"))
 	})
@@ -124,7 +124,7 @@ func TestCacheObserver_DisabledWithoutAnObserver(t *testing.T) {
 	m := New(prometheus.NewRegistry())
 	store := cache.NewCache(10, 1024)
 
-	backend := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("payload"))
 	})

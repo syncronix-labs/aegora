@@ -287,19 +287,6 @@ func etagMatches(ifNoneMatch, etag string) bool {
 	return false
 }
 
-// Middleware constructs an HTTP middleware that provides response caching.
-//
-// Request Coalescing (cache stampede protection):
-// Concurrent misses for the same cache key are collapsed with singleflight. The first
-// request (the leader) runs the downstream handler; requests for the same key arriving
-// while it is in flight (followers) wait and are served the leader's response from the
-// resulting cache entry, so N simultaneous misses produce one backend call.
-//
-// Only cache-eligible responses are shared. If the leader's response is not stored
-// (non-200 status, Set-Cookie, Cache-Control no-store, body over maxBodyBytes) or the
-// leader panics, each follower calls the downstream handler itself and observes its own
-// outcome. Failures are therefore never fanned out to other callers. Requests carrying
-// Cache-Control no-store are never cached, so they skip coalescing entirely.
 // Observer records the outcome of the cache lookups the middleware makes. The
 // implementation lives outside this package so the cache stays independent of
 // the metrics library, which cannot be imported here: internal/metrics reaches
@@ -336,6 +323,19 @@ func WithObserver(observer Observer, routeNamer RouteNamer) Option {
 	}
 }
 
+// Middleware constructs an HTTP middleware that provides response caching.
+//
+// Request Coalescing (cache stampede protection):
+// Concurrent misses for the same cache key are collapsed with singleflight. The first
+// request (the leader) runs the downstream handler; requests for the same key arriving
+// while it is in flight (followers) wait and are served the leader's response from the
+// resulting cache entry, so N simultaneous misses produce one backend call.
+//
+// Only cache-eligible responses are shared. If the leader's response is not stored
+// (non-200 status, Set-Cookie, Cache-Control no-store, body over maxBodyBytes) or the
+// leader panics, each follower calls the downstream handler itself and observes its own
+// outcome. Failures are therefore never fanned out to other callers. Requests carrying
+// Cache-Control no-store are never cached, so they skip coalescing entirely.
 func Middleware(store Store, ttl time.Duration, maxBodyBytes int, opts ...Option) middleware.Middleware {
 	var cfg options
 	for _, opt := range opts {
