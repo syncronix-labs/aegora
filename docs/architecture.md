@@ -20,6 +20,8 @@ Extracts incoming W3C tracecontext headers (`traceparent`, `tracestate`) and sta
 ### 4. Metrics
 Instruments the RED method (Rate, Errors, Duration) and in-flight request gauges using Prometheus collectors. It wraps the response writer to capture status codes and measure total processing duration. Positioned above shedding and rate limiting, it records every request attempt, including early 503 load-shed drops and 429 rate-limit rejections.
 
+The same package also exports `aegora_cache_requests_total`, a counter of cache lookups labelled by route and result (`hit` or `miss`). The response cache reports into it through an observer interface rather than a direct import, so the cache package keeps no dependency on the metrics stack. A request the cache does not serve — a non-idempotent method, an authorised request, or a response it declines to store — records no result.
+
 ### 5. AccessLog
 Emits a structured JSON log entry via `log/slog` once request processing concludes. It captures the client IP, HTTP method, URL path, matched route name, final status code, request duration, and assigned request ID. It sits after telemetry wrappers so it can inspect the final response state delivered to the client.
 
