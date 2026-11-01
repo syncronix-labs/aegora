@@ -2,10 +2,20 @@ package main
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1588,4 +1598,107 @@ func requireJSONError(t *testing.T, rec *httptest.ResponseRecorder, wantError st
 	if body["request_id"] == "" {
 		t.Fatal("expected a non-empty request_id in the error body")
 	}
+}
+
+func TestServeGatewayTLS(t *testing.T) {
+	certFile, keyFile := writeSelfSignedCertificate(t)
+
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	addr := probe.Addr().String()
+	if err := probe.Close(); err != nil {
+		t.Fatalf("release port: %v", err)
+	}
+
+	cfg := newTestConfig()
+	cfg.Server.Addr = addr
+	cfg.Server.TLSCertFile = certFile
+	cfg.Server.TLSKeyFile = keyFile
+
+	var served atomic.Bool
+	server := &http.Server{
+		Addr: addr,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			served.Store(true)
+			w.WriteHeader(http.StatusNoContent)
+		}),
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- serveGateway(server, cfg) }()
+
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+		Transport: &http.Transport{
+			// The test certificate is self-signed and scoped to 127.0.0.1.
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+		},
+	}
+
+	var resp *http.Response
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err = client.Get("https://" + addr + "/livez")
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("HTTPS request never succeeded: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNoContent)
+	}
+	if !served.Load() {
+		t.Fatal("handshake succeeded but the handler was not reached")
+	}
+
+	if err := server.Close(); err != nil {
+		t.Fatalf("close server: %v", err)
+	}
+	if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
+		t.Fatalf("serveGateway returned %v", err)
+	}
+}
+
+func writeSelfSignedCertificate(t *testing.T) (certFile, keyFile string) {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "127.0.0.1"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal key: %v", err)
+	}
+
+	dir := t.TempDir()
+	certFile = filepath.Join(dir, "cert.pem")
+	keyFile = filepath.Join(dir, "key.pem")
+	if err := os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatalf("write cert: %v", err)
+	}
+	if err := os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+	return certFile, keyFile
 }

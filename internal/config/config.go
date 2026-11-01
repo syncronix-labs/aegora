@@ -185,6 +185,10 @@ type ServerConfig struct {
 	// MaxRequestBodyBytes caps the size of incoming request bodies.
 	// Zero (the default) means unlimited.
 	MaxRequestBodyBytes int64 `yaml:"max_request_body_bytes,omitempty"`
+	// TLSCertFile and TLSKeyFile enable HTTPS on the primary listener when both
+	// are set. Setting only one is a validation error.
+	TLSCertFile string `yaml:"tls_cert_file,omitempty"`
+	TLSKeyFile  string `yaml:"tls_key_file,omitempty"`
 }
 
 // RouteConfig specifies upstream routing rules and target destinations.
@@ -311,6 +315,13 @@ func (c *Config) Validate() error {
 
 	if c.Server.IdleTimeout <= 0 {
 		return fmt.Errorf("config: server.idle_timeout: must be positive, got %s", c.Server.IdleTimeout)
+	}
+
+	if (c.Server.TLSCertFile == "") != (c.Server.TLSKeyFile == "") {
+		if c.Server.TLSCertFile == "" {
+			return fmt.Errorf("config: server.tls_cert_file: required when server.tls_key_file is set")
+		}
+		return fmt.Errorf("config: server.tls_key_file: required when server.tls_cert_file is set")
 	}
 
 	if c.Server.MaxRequestBodyBytes < 0 {

@@ -582,6 +582,16 @@ func runCheckConfig(path string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// serveGateway starts the primary listener, using TLS when the config names a
+// certificate and key. ListenAndServeTLS reports an unreadable file, so a bad
+// path fails startup instead of falling back to HTTP.
+func serveGateway(server *http.Server, cfg *config.Config) error {
+	if cfg.Server.TLSCertFile != "" {
+		return server.ListenAndServeTLS(cfg.Server.TLSCertFile, cfg.Server.TLSKeyFile)
+	}
+	return server.ListenAndServe()
+}
+
 func main() {
 	var configPath string
 	showVersion := flag.Bool("version", false, "print the Aegora version and exit")
@@ -766,7 +776,7 @@ func main() {
 		close(shutdownDone)
 	}()
 
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := serveGateway(server, cfg); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server error", slog.String("error", err.Error()))
 		os.Exit(1)
 	}

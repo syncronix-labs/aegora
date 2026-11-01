@@ -41,11 +41,15 @@ Defines data-plane network binding and connection timeouts for the primary gatew
 | `write_timeout` | Duration | none (required) | No (Restart) | Maximum duration before timing out writes of the response (for example, `"30s"`). Must be positive. |
 | `idle_timeout` | Duration | none (required) | No (Restart) | Maximum amount of time to wait for the next request when keep-alives are enabled (for example, `"60s"`). Must be positive. |
 | `max_request_body_bytes` | int64 | `0` (unlimited) | Yes | Maximum request body size in bytes (for example, `10485760` for 10 MB). Requests exceeding it are rejected with `413 {"error":"request body too large"}` and never reach the queue or upstream. Must be non-negative. |
+| `tls_cert_file` | string | none | No (Restart) | Path to a PEM certificate chain. Set together with `tls_key_file` to serve the primary listener over HTTPS. Setting it alone fails validation. |
+| `tls_key_file` | string | none | No (Restart) | Path to the PEM private key matching `tls_cert_file`. Both files are read at startup; an unreadable file fails startup instead of falling back to HTTP. |
 
 Request body limit behavior:
 - A declared `Content-Length` above the limit is rejected immediately, before admission queueing or proxying.
 - Bodies without a declared length (chunked transfer encoding) are cut off once they exceed the limit, and the gateway responds with `413`.
 - Rejections are still recorded by metrics and the access log.
+
+TLS applies to the primary listener only. The admin server (`admin.addr`) and the metrics listener (`observability.metrics_addr`) remain plain HTTP; terminate TLS for those separately if they are exposed beyond localhost.
 
 Environment variable overrides:
 - `AEGORA_SERVER_ADDR`
