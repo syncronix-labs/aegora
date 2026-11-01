@@ -287,6 +287,42 @@ func etagMatches(ifNoneMatch, etag string) bool {
 	return false
 }
 
+// Observer records the outcome of the cache lookups the middleware makes. The
+// implementation lives outside this package so the cache stays independent of
+// the metrics library, which cannot be imported here: internal/metrics reaches
+// internal/proxy, and internal/proxy already imports this package.
+type Observer interface {
+	ObserveCache(route, result string)
+}
+
+// RouteNamer resolves the configured route name for a request, so a cache
+// observation carries the same label as the request metrics.
+type RouteNamer interface {
+	RouteName(r *http.Request) string
+}
+
+// options holds the optional wiring of Middleware.
+type options struct {
+	observer   Observer
+	routeNamer RouteNamer
+}
+
+// Option configures optional behaviour of Middleware.
+type Option func(*options)
+
+// WithObserver reports every cache lookup the middleware makes. routeNamer
+// supplies the route label, and both must be non-nil for anything to be
+// reported. A lookup is reported as "hit" when it was served from the store and
+// as "miss" when it went to the backend and produced a cacheable response;
+// requests and responses the cache is not allowed to touch are not reported at
+// all, because they never became a cache lookup in the first place.
+func WithObserver(observer Observer, routeNamer RouteNamer) Option {
+	return func(o *options) {
+		o.observer = observer
+		o.routeNamer = routeNamer
+	}
+}
+
 // Middleware constructs an HTTP middleware that provides response caching.
 //
 // Request Coalescing (cache stampede protection):
@@ -300,7 +336,23 @@ func etagMatches(ifNoneMatch, etag string) bool {
 // leader panics, each follower calls the downstream handler itself and observes its own
 // outcome. Failures are therefore never fanned out to other callers. Requests carrying
 // Cache-Control no-store are never cached, so they skip coalescing entirely.
-func Middleware(store Store, ttl time.Duration, maxBodyBytes int) middleware.Middleware {
+func Middleware(store Store, ttl time.Duration, maxBodyBytes int, opts ...Option) middleware.Middleware {
+	var cfg options
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	observe := func(r *http.Request, result string) {
+		if cfg.observer == nil || cfg.routeNamer == nil {
+			return
+		}
+		route := cfg.routeNamer.RouteName(r)
+		if route == "" {
+			route = "unmatched"
+		}
+		cfg.observer.ObserveCache(route, result)
+	}
+
 	return func(next http.Handler) http.Handler {
 		var group singleflight.Group
 
@@ -322,6 +374,7 @@ func Middleware(store Store, ttl time.Duration, maxBodyBytes int) middleware.Mid
 
 			// Attempt cache hit
 			if entry, hit := store.Get(cacheKey); hit {
+				observe(r, "hit")
 				serveEntry(w, r, entry, "HIT")
 				return
 			}
@@ -346,7 +399,11 @@ func Middleware(store Store, ttl time.Duration, maxBodyBytes int) middleware.Mid
 						result = (*Entry)(nil)
 					}
 				}()
-				return fetchAndStore(w, r, next, store, cacheKey, ttl, maxBodyBytes), nil
+				entry := fetchAndStore(w, r, next, store, cacheKey, ttl, maxBodyBytes)
+				if entry != nil {
+					observe(r, "miss")
+				}
+				return entry, nil
 			})
 
 			if leader {
@@ -358,10 +415,13 @@ func Middleware(store Store, ttl time.Duration, maxBodyBytes int) middleware.Mid
 
 			// Follower: share the leader's cacheable response, or fetch independently.
 			if entry, _ := v.(*Entry); entry != nil {
+				observe(r, "miss")
 				serveEntry(w, r, entry, "MISS")
 				return
 			}
-			fetchAndStore(w, r, next, store, cacheKey, ttl, maxBodyBytes)
+			if entry := fetchAndStore(w, r, next, store, cacheKey, ttl, maxBodyBytes); entry != nil {
+				observe(r, "miss")
+			}
 		})
 	}
 }
@@ -469,6 +529,6 @@ func requestCacheKey(r *http.Request) string {
 // CacheMiddleware is an explicit alias for Middleware to support conventional naming.
 //
 //nolint:revive // name stutter is accepted for API clarity
-func CacheMiddleware(store Store, ttl time.Duration, maxBodyBytes int) middleware.Middleware {
-	return Middleware(store, ttl, maxBodyBytes)
+func CacheMiddleware(store Store, ttl time.Duration, maxBodyBytes int, opts ...Option) middleware.Middleware {
+	return Middleware(store, ttl, maxBodyBytes, opts...)
 }
