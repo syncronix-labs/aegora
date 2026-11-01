@@ -51,6 +51,11 @@ The caching middleware is deliberately positioned after the rate limiting layer.
 ### Shedding Before Downstream Queues
 Adaptive load shedding executes before the admission queue, rate limit token expenditure, and proxy layers. Dropping traffic at the earliest point during a latency crisis is the cheapest operation the gateway can perform. It avoids wasting rate limit budget on requests that would eventually time out, eliminates queue lock contention, and preserves backend capacity for critical endpoints.
 
+### Readiness Reflects Configured Dependencies
+`/livez` is a static 200 that answers only "the process is up", so an orchestrator never restarts a healthy gateway because a dependency is down. `/readyz` answers the other question: are the dependencies this configuration actually uses reachable right now. The check set is collected as the configuration is applied, so a feature that is switched off contributes nothing to it, and it is rebuilt with the handler on `POST /admin/reload` rather than captured once at process start. Today the only check is a Redis ping, registered when the L2 cache is enabled.
+
+Probes run concurrently under a 500ms budget and report per dependency: `{"status":"not ready","checks":{"redis":"error: ..."}}`. A probe that overruns the budget fails rather than being waited on, so a dependency that accepts a connection and then goes silent cannot hold the endpoint open. The Redis client stays open even when the startup ping fails and the cache degrades to L1-only, because the configured dependency is still down and that has to be visible to an operator. Upstream backends are deliberately not checked: they fail independently per route, and the pool plus circuit breaker already handle that without taking a healthy gateway out of rotation.
+
 ### Atomic Handler Swap for Hot Reload
 Configuration hot reloading via `POST /admin/reload` creates an entirely new HTTP handler and middleware pipeline in memory. Once validated and constructed, the new pipeline is swapped into active service via `sync/atomic`. In-flight requests continue executing against the old handler and drain naturally, while all incoming requests immediately route through the new handler without dropped connections or mutex bottlenecks on the hot path.
 
