@@ -1,0 +1,75 @@
+name: Benchmarks
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  benchstat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out pull request
+        uses: actions/checkout@v7
+        with:
+          path: pr
+
+      - name: Check out base revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.4"
+          cache-dependency-path: |
+            pr/go.sum
+            base/go.sum
+
+      - name: Install benchstat
+        run: go install golang.org/x/perf/cmd/benchstat@v0.0.0-20261009192801-be2c69fb417e
+
+      - name: Benchmark base revision
+        working-directory: base
+        run: |
+          go test -run '^$' -bench=. -benchmem -count=6 \
+            ./internal/proxy/... ./internal/cache/... ./internal/ratelimit/... \
+            > "$GITHUB_WORKSPACE/bench-base.txt"
+
+      - name: Benchmark pull request
+        working-directory: pr
+        run: |
+          go test -run '^$' -bench=. -benchmem -count=6 \
+            ./internal/proxy/... ./internal/cache/... ./internal/ratelimit/... \
+            > "$GITHUB_WORKSPACE/bench-pr.txt"
+
+      - name: Compare with base
+        run: |
+          benchstat -format csv bench-base.txt bench-pr.txt > benchstat.csv
+          cat benchstat.csv
+
+          # Compare only the sec/op table; rows whose change is not statistically
+          # significant are printed as "~" and do not fail the job. A benchmark whose
+          # sec/op grows by more than 10% against the base revision fails the job.
+          awk -F, '
+            $2 == "sec/op"   { section = 1; next }
+            $2 == "B/op" || $2 == "allocs/op" { section = 0; next }
+            section && $1 != "geomean" && $6 ~ /^\+/ {
+              pct = $6
+              sub(/%$/, "", pct)
+              sub(/^\+/, "", pct)
+              if (pct + 0 > 10) {
+                printf "REGRESSION: %s sec/op %s\n", $1, $6
+                failed = 1
+              }
+            }
+            END { exit failed }
+          ' benchstat.csv
