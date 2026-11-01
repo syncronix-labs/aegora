@@ -326,6 +326,8 @@ Run the test suite benchmarks:
 go test -bench=. -benchtime=2s -benchmem ./internal/...
 ```
 
+Pull requests also run a benchmark comparison job. It benchmarks the base revision and the pull request with six samples each, compares them with `benchstat`, and fails when any `sec/op` result regresses by more than 10% against the base. The job is advisory for now: it reports as a normal check but is not a required one.
+
 ### Measured Performance
 
 The following benchmarks were conducted on macOS (Apple M1, 8 cores) running Go 1.26.4:
