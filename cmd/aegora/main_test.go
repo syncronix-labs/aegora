@@ -1237,7 +1237,7 @@ admin:
 	levelVar.Set(lvl)
 	logger := slog.New(slog.NewJSONHandler(io.Discard, &slog.HandlerOptions{Level: levelVar}))
 
-	handler, q, reg, _, err := buildAppWithRegistry(cfg, logger, nil)
+	handler, q, reg, _, gateway, err := buildAppWithRegistry(cfg, logger, nil)
 	if err != nil {
 		t.Fatalf("buildAppWithRegistry: %v", err)
 	}
@@ -1245,7 +1245,7 @@ admin:
 		q.Start()
 	}
 
-	reloader := newGatewayReloader(configPath, cfg, handler, q, logger, reg, levelVar)
+	reloader := newGatewayReloader(configPath, cfg, handler, q, gateway, logger, reg, levelVar)
 	rootHandler := reloader.RootHandler()
 
 	routesFn := func() []admin.RouteInfo {
@@ -1402,6 +1402,122 @@ admin:
 	}
 }
 
+func TestAdminRoutes_ReportsLiveBreakerAndTargetHealth(t *testing.T) {
+	healthyBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer healthyBackend.Close()
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "aegora.yaml")
+	data := fmt.Sprintf(`
+server:
+  addr: "127.0.0.1:8080"
+  read_timeout: "15s"
+  write_timeout: "15s"
+  idle_timeout: "30s"
+routes:
+  - name: "failing"
+    path_prefix: "/fail"
+    targets:
+      - "http://127.0.0.1:1"
+  - name: "healthy"
+    path_prefix: "/ok"
+    targets:
+      - "%s"
+reliability:
+  breaker_failure_threshold: 1
+  breaker_cooldown: "1m"
+  retry_enabled: false
+observability:
+  log_level: "info"
+admin:
+  enabled: true
+  addr: "127.0.0.1:9091"
+`, healthyBackend.URL)
+
+	if err := os.WriteFile(configPath, []byte(data), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	handler, q, reg, _, gateway, err := buildAppWithRegistry(cfg, logger, nil)
+	if err != nil {
+		t.Fatalf("buildAppWithRegistry: %v", err)
+	}
+	if q != nil {
+		q.Start()
+	}
+
+	reloader := newGatewayReloader(configPath, cfg, handler, q, gateway, logger, reg, nil)
+	routesFn := func() []admin.RouteInfo {
+		return routeInfos(reloader.currentConfig.Load(), reloader.gatewayPtr.Load())
+	}
+	adminSrv := admin.NewServer(cfg.Admin.Addr, reloader, func() admin.ConfigSnapshot {
+		return reloader.currentConfig.Load()
+	}, routesFn)
+
+	// The healthy route serves traffic before the snapshot is taken.
+	okRec := httptest.NewRecorder()
+	handler.ServeHTTP(okRec, httptest.NewRequest(http.MethodGet, "/ok", nil))
+	if okRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from the healthy route, got %d", okRec.Code)
+	}
+
+	// The unreachable target fails at the transport, so the proxy answers 502 and records
+	// the failure. The first failure also marks the target down, which is why the threshold
+	// is 1: a second request would be rejected by the pool before reaching the transport.
+	failRec := httptest.NewRecorder()
+	handler.ServeHTTP(failRec, httptest.NewRequest(http.MethodGet, "/fail", nil))
+	if failRec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 from the failing route, got %d", failRec.Code)
+	}
+
+	routesRec := httptest.NewRecorder()
+	adminSrv.Handler().ServeHTTP(routesRec, httptest.NewRequest(http.MethodGet, "/admin/routes", nil))
+	if routesRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /admin/routes, got %d", routesRec.Code)
+	}
+
+	var infos []admin.RouteInfo
+	if err := json.Unmarshal(routesRec.Body.Bytes(), &infos); err != nil {
+		t.Fatalf("unmarshal /admin/routes: %v", err)
+	}
+	byName := make(map[string]admin.RouteInfo, len(infos))
+	for _, info := range infos {
+		byName[info.Name] = info
+	}
+
+	failing := byName["failing"]
+	if failing.BreakerState != "open" {
+		t.Fatalf("expected the failing route breaker to be open, got %q", failing.BreakerState)
+	}
+	if failing.ConsecutiveFailures != 1 {
+		t.Fatalf("expected 1 consecutive failure, got %d", failing.ConsecutiveFailures)
+	}
+	if len(failing.TargetHealth) != 1 || failing.TargetHealth[0].Healthy {
+		t.Fatalf("expected the unreachable target to report unhealthy, got %+v", failing.TargetHealth)
+	}
+
+	healthy := byName["healthy"]
+	if healthy.BreakerState != "closed" {
+		t.Fatalf("expected the healthy route breaker to be closed, got %q", healthy.BreakerState)
+	}
+	if len(healthy.TargetHealth) != 1 || !healthy.TargetHealth[0].Healthy {
+		t.Fatalf("expected the healthy route target to report healthy, got %+v", healthy.TargetHealth)
+	}
+
+	// Field names are part of the admin API contract; keep them stable.
+	if !strings.Contains(routesRec.Body.String(), `"breaker_state":`) || !strings.Contains(routesRec.Body.String(), `"target_health":`) {
+		t.Fatalf("expected snake_case live-state fields in the response, got %s", routesRec.Body.String())
+	}
+}
+
 func TestHotReload_InvalidConfigAtomicity(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -1438,12 +1554,12 @@ observability:
 	}
 
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	handler, q, reg, _, err := buildAppWithRegistry(cfg, logger, nil)
+	handler, q, reg, _, gateway, err := buildAppWithRegistry(cfg, logger, nil)
 	if err != nil {
 		t.Fatalf("buildAppWithRegistry: %v", err)
 	}
 
-	reloader := newGatewayReloader(configPath, cfg, handler, q, logger, reg, nil)
+	reloader := newGatewayReloader(configPath, cfg, handler, q, gateway, logger, reg, nil)
 	rootHandler := reloader.RootHandler()
 
 	// Initial request succeeds
@@ -1519,12 +1635,12 @@ admin:
 	}
 
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	handler, q, reg, _, err := buildAppWithRegistry(cfg, logger, nil)
+	handler, q, reg, _, gateway, err := buildAppWithRegistry(cfg, logger, nil)
 	if err != nil {
 		t.Fatalf("buildAppWithRegistry: %v", err)
 	}
 
-	reloader := newGatewayReloader(configPath, cfg, handler, q, logger, reg, nil)
+	reloader := newGatewayReloader(configPath, cfg, handler, q, gateway, logger, reg, nil)
 
 	// Change restart-required sections: server.addr, metrics_addr, admin.addr, tracing exporter
 	changedYAML := `

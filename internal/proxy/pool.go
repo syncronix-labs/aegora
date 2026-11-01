@@ -150,6 +150,38 @@ func (p *Pool) ReportSuccess(index int) {
 	}
 }
 
+// TargetHealth is the passive health of one upstream target, as the pool sees it.
+type TargetHealth struct {
+	URL     string `json:"url"`
+	Healthy bool   `json:"healthy"`
+}
+
+// Health reports the passive health of every configured target, in configuration order.
+//
+// A target that failed recently stays down until its cooldown elapses, which is exactly the
+// state Next consults; an operator reading this sees the same view the balancer uses.
+// The snapshot copies under the pool's read lock and returns immediately, so polling it
+// does not hold up selection.
+func (p *Pool) Health() []TargetHealth {
+	if p == nil {
+		return nil
+	}
+
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	now := time.Now()
+	health := make([]TargetHealth, len(p.targets))
+	for i, target := range p.targets {
+		health[i] = TargetHealth{
+			URL:     target.String(),
+			Healthy: !now.Before(p.unhealthyUntil[i]),
+		}
+	}
+
+	return health
+}
+
 func (p *Pool) isHealthy(index int) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()

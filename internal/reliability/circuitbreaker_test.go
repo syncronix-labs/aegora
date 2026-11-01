@@ -424,3 +424,43 @@ func TestBreakerTransport(t *testing.T) {
 		}
 	})
 }
+
+func TestCircuitBreaker_SnapshotTracksConsecutiveFailures(t *testing.T) {
+	cb := NewCircuitBreaker(2, 20*time.Millisecond, 1, 1)
+
+	if state, failures := cb.Snapshot(); state != StateClosed || failures != 0 {
+		t.Fatalf("fresh breaker = (%v, %d), want (closed, 0)", state, failures)
+	}
+
+	cb.RecordFailure()
+	if state, failures := cb.Snapshot(); state != StateClosed || failures != 1 {
+		t.Fatalf("after one failure = (%v, %d), want (closed, 1)", state, failures)
+	}
+
+	cb.RecordFailure()
+	if state, failures := cb.Snapshot(); state != StateOpen || failures != 2 {
+		t.Fatalf("after tripping = (%v, %d), want (open, 2)", state, failures)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	if !cb.Allow() {
+		t.Fatal("expected an admitted probe after the cooldown")
+	}
+	if state, failures := cb.Snapshot(); state != StateHalfOpen || failures != 2 {
+		t.Fatalf("during probe = (%v, %d), want (half-open, 2)", state, failures)
+	}
+
+	cb.RecordFailure()
+	if state, failures := cb.Snapshot(); state != StateOpen || failures != 3 {
+		t.Fatalf("after a failed probe = (%v, %d), want (open, 3)", state, failures)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	if !cb.Allow() {
+		t.Fatal("expected a second probe after the cooldown")
+	}
+	cb.RecordSuccess()
+	if state, failures := cb.Snapshot(); state != StateClosed || failures != 0 {
+		t.Fatalf("after a successful probe = (%v, %d), want (closed, 0)", state, failures)
+	}
+}

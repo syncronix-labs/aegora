@@ -304,9 +304,11 @@ Aegora provides a separate administrative server listening on port `9091` by def
 | Method | Path            | Purpose                                                                      |
 | ------ | --------------- | ---------------------------------------------------------------------------- |
 | `GET`  | `/admin/health` | Liveness verification and binary build version                               |
-| `GET`  | `/admin/routes` | JSON array of active route rules, match prefixes, target pools, and policies |
+| `GET`  | `/admin/routes` | JSON array of active route rules, policies, live breaker state, and target health |
 | `GET`  | `/admin/config` | Runtime snapshot of the active server configuration                          |
 | `POST` | `/admin/reload` | Trigger hot reload of configuration from disk without downtime               |
+
+`GET /admin/routes` merges the static route configuration with the live state owned by the gateway: `breaker_state` (`closed`, `open`, or `half_open`) and `consecutive_failures` per route, plus `target_health` per upstream target, where `healthy` is false while a failed target is in its cooldown. The response is read-only and safe to poll during an incident.
 
 Example configuration reload trigger:
 

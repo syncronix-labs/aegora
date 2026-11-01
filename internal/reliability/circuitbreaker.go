@@ -86,6 +86,20 @@ func NewCircuitBreaker(
 	}
 }
 
+// Snapshot reports the breaker's current state and consecutive failure count.
+//
+// The count rises on each failure with no success between them and resets on a success.
+// While the breaker is open it keeps the count that tripped it, and a failed half-open probe
+// adds to it, so an operator sees how far past the threshold the upstream went.
+// The read holds the same mutex Allow and the record methods take, so an operator polling
+// this cannot stall traffic beyond the brief section those methods already hold.
+func (cb *CircuitBreaker) Snapshot() (State, int) {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	return cb.state, cb.consecutiveFailures
+}
+
 // Allow reports whether a request is permitted to proceed.
 // In Closed state, all requests are allowed.
 // In Open state, requests are rejected until cooldown elapses, transitioning to Half-Open.
@@ -159,14 +173,15 @@ func (cb *CircuitBreaker) RecordFailure() {
 		if cb.consecutiveFailures >= cb.failureThreshold {
 			cb.state = StateOpen
 			cb.lastTransition = now
-			cb.consecutiveFailures = 0
 			cb.halfOpenInFlight = 0
 			cb.halfOpenSuccesses = 0
 		}
 	case StateHalfOpen:
 		cb.state = StateOpen
 		cb.lastTransition = now
-		cb.consecutiveFailures = 0
+		// The probe failed with no success in between, so it continues the streak that
+		// opened the breaker rather than starting a new one.
+		cb.consecutiveFailures++
 		cb.halfOpenInFlight = 0
 		cb.halfOpenSuccesses = 0
 	}
