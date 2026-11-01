@@ -1,4 +1,4 @@
-﻿package readiness
+package readiness
 
 import (
 	"context"
