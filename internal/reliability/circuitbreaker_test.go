@@ -55,6 +55,47 @@ func TestCircuitBreaker_TripsAfterNConsecutiveFailures(t *testing.T) {
 	}
 }
 
+func TestCircuitBreaker_CooldownRemaining(t *testing.T) {
+	cooldown := 400 * time.Millisecond
+	cb := NewCircuitBreaker(1, cooldown, 1, 1)
+
+	if got := cb.CooldownRemaining(); got != 0 {
+		t.Fatalf("expected no cooldown while closed, got %v", got)
+	}
+
+	cb.RecordFailure()
+	if cb.State() != StateOpen {
+		t.Fatalf("expected state open, got %v", cb.State())
+	}
+
+	remaining := cb.CooldownRemaining()
+	if remaining <= 0 {
+		t.Fatalf("expected a positive cooldown while open, got %v", remaining)
+	}
+	if remaining > cooldown {
+		t.Fatalf("expected the cooldown to be at most %v, got %v", cooldown, remaining)
+	}
+
+	// The remainder has to shrink as the cooldown elapses, otherwise it cannot
+	// tell a client anything the configured cooldown would not.
+	time.Sleep(150 * time.Millisecond)
+	shrunk := cb.CooldownRemaining()
+	if shrunk >= remaining {
+		t.Fatalf("expected the cooldown to shrink from %v, got %v", remaining, shrunk)
+	}
+
+	// Once the cooldown has elapsed the breaker admits a probe on the next
+	// Allow, and a breaker that is no longer holding traffic back has no
+	// backoff to advertise.
+	time.Sleep(cooldown)
+	if !cb.Allow() {
+		t.Fatal("expected the breaker to admit a probe after the cooldown")
+	}
+	if got := cb.CooldownRemaining(); got != 0 {
+		t.Fatalf("expected no cooldown once half-open, got %v", got)
+	}
+}
+
 func TestCircuitBreaker_SuccessResetsConsecutiveFailures(t *testing.T) {
 	cb := NewCircuitBreaker(3, time.Minute, 1, 1)
 

@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -131,6 +133,17 @@ func NewGateway(routes []RouteConfig, rc ReliabilityConfig) (*Gateway, error) {
 			},
 			func(w http.ResponseWriter, req *http.Request, err error) {
 				if errors.Is(err, reliability.ErrCircuitOpen) {
+					// The breaker knows exactly when it will admit a probe, so tell the
+					// client when to come back instead of letting it retry immediately.
+					// The header has to be in place before the shared error writer sends
+					// the status line.
+					if remaining := breaker.CooldownRemaining(); remaining > 0 {
+						seconds := int(math.Ceil(remaining.Seconds()))
+						if seconds < 1 {
+							seconds = 1
+						}
+						w.Header().Set("Retry-After", strconv.Itoa(seconds))
+					}
 					httperr.Write(w, http.StatusServiceUnavailable, "service unavailable", middleware.GetRequestID(req))
 					return
 				}
