@@ -37,6 +37,20 @@ type RouteInfo struct {
 	PathRegex  string   `json:"path_regex,omitempty"`
 	Targets    []string `json:"targets"`
 	LBPolicy   string   `json:"lb_policy"`
+
+	// Live state, merged in by the caller that owns the gateway. A route under an open
+	// breaker and a route running on one leg look identical in configuration, and those are
+	// the two things an operator needs first during an incident.
+	BreakerState        string         `json:"breaker_state"`
+	ConsecutiveFailures int            `json:"consecutive_failures"`
+	TargetHealth        []TargetHealth `json:"target_health"`
+}
+
+// TargetHealth reports whether the load balancer currently considers one upstream target
+// available. A target that failed recently stays unhealthy until its cooldown elapses.
+type TargetHealth struct {
+	URL     string `json:"url"`
+	Healthy bool   `json:"healthy"`
 }
 
 // Server is the dedicated administrative HTTP server for Aegora.

@@ -215,12 +215,66 @@ func toReliabilityConfig(cfg config.ReliabilityConfig, baseTransport http.RoundT
 
 // buildApp constructs the HTTP handler wrapped with the middleware chain and optional admission queue.
 func buildApp(cfg *config.Config, logger *slog.Logger) (http.Handler, *queue.Queue, error) {
-	h, q, _, _, err := buildAppWithRegistry(cfg, logger, nil)
+	h, q, _, _, _, err := buildAppWithRegistry(cfg, logger, nil)
 	return h, q, err
 }
 
+// routeInfos merges the configured routes with the live state the gateway reports.
+//
+// Configuration answers "what should this route do"; only the gateway can answer "is its
+// breaker open right now, and which targets is the balancer skipping" — the two questions an
+// operator asks first during an incident. A gateway that has not reported a route yet is
+// reported as closed and up, so the response is well-formed before any traffic arrives.
+func routeInfos(activeCfg *config.Config, gw *proxy.Gateway) []admin.RouteInfo {
+	if activeCfg == nil {
+		return []admin.RouteInfo{}
+	}
+
+	live := make(map[string]proxy.RouteStatus, len(activeCfg.Routes))
+	if gw != nil {
+		for _, status := range gw.Status() {
+			live[status.Name] = status
+		}
+	}
+
+	infos := make([]admin.RouteInfo, len(activeCfg.Routes))
+	for i, r := range activeCfg.Routes {
+		info := admin.RouteInfo{
+			Name:         r.Name,
+			PathPrefix:   r.PathPrefix,
+			PathRegex:    r.PathRegex,
+			Targets:      r.Targets,
+			LBPolicy:     r.LB,
+			BreakerState: "closed",
+		}
+
+		if status, ok := live[r.Name]; ok {
+			info.BreakerState = status.BreakerState
+			info.ConsecutiveFailures = status.ConsecutiveFailures
+			info.TargetHealth = make([]admin.TargetHealth, len(status.Targets))
+			for j, target := range status.Targets {
+				info.TargetHealth[j] = admin.TargetHealth{URL: target.URL, Healthy: target.Healthy}
+			}
+		} else {
+			// Nothing has been served on this route yet, so nothing has failed either.
+			info.TargetHealth = make([]admin.TargetHealth, len(r.Targets))
+			for j, target := range r.Targets {
+				info.TargetHealth[j] = admin.TargetHealth{URL: target, Healthy: true}
+			}
+		}
+
+		infos[i] = info
+	}
+
+	return infos
+}
+
 // buildAppWithRegistry constructs the HTTP handler wrapped with the middleware chain, metrics, tracing, and optional admission queue.
-func buildAppWithRegistry(cfg *config.Config, logger *slog.Logger, reg *prometheus.Registry) (http.Handler, *queue.Queue, *prometheus.Registry, func(context.Context) error, error) {
+//
+// The gateway it builds is returned alongside the handler because the gateway is the only
+// component that owns the live breaker and pool state the admin API reports; the handler
+// chain hides it behind middleware.
+func buildAppWithRegistry(cfg *config.Config, logger *slog.Logger, reg *prometheus.Registry) (http.Handler, *queue.Queue, *prometheus.Registry, func(context.Context) error, *proxy.Gateway, error) {
 	if reg == nil {
 		reg = prometheus.NewRegistry()
 	}
@@ -237,7 +291,7 @@ func buildAppWithRegistry(cfg *config.Config, logger *slog.Logger, reg *promethe
 			SampleRatio:  cfg.Observability.Tracing.SampleRatio,
 		})
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("setup tracing: %w", err)
+			return nil, nil, nil, nil, nil, fmt.Errorf("setup tracing: %w", err)
 		}
 		tracingShutdown = shutdown
 		tracer = tp.Tracer("github.com/syncronix-labs/aegora")
@@ -250,7 +304,7 @@ func buildAppWithRegistry(cfg *config.Config, logger *slog.Logger, reg *promethe
 	rc := toReliabilityConfig(cfg.Reliability, baseTransport)
 	gw, err := proxy.NewGateway(gwRoutes, rc)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("build gateway: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("build gateway: %w", err)
 	}
 
 	var gwHandler http.Handler = gw
@@ -346,7 +400,7 @@ func buildAppWithRegistry(cfg *config.Config, logger *slog.Logger, reg *promethe
 
 	chain := middleware.New(mws...)
 
-	return chain.Then(mux), q, reg, tracingShutdown, nil
+	return chain.Then(mux), q, reg, tracingShutdown, gw, nil
 }
 
 // buildHandler constructs the HTTP handler wrapped with the middleware chain.
@@ -391,7 +445,7 @@ func buildHandler(cfg *config.Config, logger *slog.Logger) (http.Handler, error)
 
 // buildHandlerWithRegistry constructs the HTTP handler using an explicitly provided Prometheus registry.
 func buildHandlerWithRegistry(cfg *config.Config, logger *slog.Logger, reg *prometheus.Registry) (http.Handler, error) {
-	h, q, _, _, err := buildAppWithRegistry(cfg, logger, reg)
+	h, q, _, _, _, err := buildAppWithRegistry(cfg, logger, reg)
 	if err != nil {
 		return nil, err
 	}
@@ -428,6 +482,7 @@ type gatewayReloader struct {
 	currentConfig atomic.Pointer[config.Config]
 	handlerPtr    atomic.Pointer[http.Handler]
 	queuePtr      atomic.Pointer[queue.Queue]
+	gatewayPtr    atomic.Pointer[proxy.Gateway]
 }
 
 func newGatewayReloader(
@@ -435,6 +490,7 @@ func newGatewayReloader(
 	initialCfg *config.Config,
 	initialHandler http.Handler,
 	initialQ *queue.Queue,
+	initialGateway *proxy.Gateway,
 	logger *slog.Logger,
 	reg *prometheus.Registry,
 	levelVar *slog.LevelVar,
@@ -448,6 +504,7 @@ func newGatewayReloader(
 	r.currentConfig.Store(initialCfg)
 	r.handlerPtr.Store(&initialHandler)
 	r.queuePtr.Store(initialQ)
+	r.gatewayPtr.Store(initialGateway)
 	return r
 }
 
@@ -471,7 +528,7 @@ func (r *gatewayReloader) Reload() ([]string, []string, error) {
 		return nil, nil, fmt.Errorf("config reload: %w", err)
 	}
 
-	newHandler, newQ, _, _, err := buildAppWithRegistry(newCfg, r.logger, r.reg)
+	newHandler, newQ, _, _, newGateway, err := buildAppWithRegistry(newCfg, r.logger, r.reg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("rebuild gateway: %w", err)
 	}
@@ -482,6 +539,10 @@ func (r *gatewayReloader) Reload() ([]string, []string, error) {
 
 	// Atomically swap the serving handler
 	r.handlerPtr.Store(&newHandler)
+
+	// The admin API reports live breaker and pool state, so it has to follow the swap:
+	// the old gateway is no longer the one answering requests.
+	r.gatewayPtr.Store(newGateway)
 
 	oldQ := r.queuePtr.Swap(newQ)
 	if oldQ != nil {
@@ -619,7 +680,7 @@ func main() {
 	levelVar.Set(lvl)
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: levelVar}))
 
-	handler, q, reg, tracingShutdown, err := buildAppWithRegistry(cfg, logger, nil)
+	handler, q, reg, tracingShutdown, gateway, err := buildAppWithRegistry(cfg, logger, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error building handler: %v\n", err)
 		os.Exit(1)
@@ -628,7 +689,7 @@ func main() {
 		q.Start()
 	}
 
-	reloader := newGatewayReloader(configPath, cfg, handler, q, logger, reg, levelVar)
+	reloader := newGatewayReloader(configPath, cfg, handler, q, gateway, logger, reg, levelVar)
 
 	server := &http.Server{
 		Addr:         cfg.Server.Addr,
@@ -659,21 +720,7 @@ func main() {
 	}
 
 	routesFn := func() []admin.RouteInfo {
-		activeCfg := reloader.currentConfig.Load()
-		if activeCfg == nil {
-			return []admin.RouteInfo{}
-		}
-		infos := make([]admin.RouteInfo, len(activeCfg.Routes))
-		for i, r := range activeCfg.Routes {
-			infos[i] = admin.RouteInfo{
-				Name:       r.Name,
-				PathPrefix: r.PathPrefix,
-				PathRegex:  r.PathRegex,
-				Targets:    r.Targets,
-				LBPolicy:   r.LB,
-			}
-		}
-		return infos
+		return routeInfos(reloader.currentConfig.Load(), reloader.gatewayPtr.Load())
 	}
 
 	configFn := func() admin.ConfigSnapshot {

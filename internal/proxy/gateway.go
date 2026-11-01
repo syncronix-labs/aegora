@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -46,6 +47,53 @@ type ReliabilityConfig struct {
 	RetryEnabled            bool
 	RetryPolicy             reliability.RetryPolicy
 	BaseTransport           http.RoundTripper
+}
+
+// RouteStatus is a point-in-time view of the live state behind one configured route:
+// the circuit breaker that guards it and the passive health of its targets.
+type RouteStatus struct {
+	Name                string         `json:"name"`
+	BreakerState        string         `json:"breaker_state"`
+	ConsecutiveFailures int            `json:"consecutive_failures"`
+	Targets             []TargetHealth `json:"targets"`
+}
+
+// Status snapshots the breaker and target health of every route, ordered by name so the
+// admin response does not shuffle between polls.
+//
+// This is the state an operator wants mid-incident and cannot get from the configuration:
+// which routes are failing fast and which targets the balancer is skipping. Every value is
+// read under the mutex its own component already holds briefly, so polling the admin API
+// does not slow the request path down.
+func (g *Gateway) Status() []RouteStatus {
+	if g == nil {
+		return nil
+	}
+
+	statuses := make([]RouteStatus, 0, len(g.routes))
+	for cfg, entry := range g.routes {
+		state, failures := entry.breaker.Snapshot()
+		statuses = append(statuses, RouteStatus{
+			Name:                cfg.Name,
+			BreakerState:        breakerStateName(state),
+			ConsecutiveFailures: failures,
+			Targets:             entry.pool.Health(),
+		})
+	}
+
+	sort.Slice(statuses, func(i, j int) bool { return statuses[i].Name < statuses[j].Name })
+
+	return statuses
+}
+
+// breakerStateName renders a breaker state the way the admin API documents it: the
+// half-open state carries an underscore so clients can parse it without special-casing.
+func breakerStateName(state reliability.State) string {
+	if state == reliability.StateHalfOpen {
+		return "half_open"
+	}
+
+	return state.String()
 }
 
 // Gateway routes incoming HTTP requests to upstream server pools via reverse proxies,
