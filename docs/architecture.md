@@ -45,6 +45,9 @@ Matches requests against configured routes via prefix or regular expression rule
 ### Circuit Breaker Outside the Retry Loop
 The circuit breaker sits outside the retry transport, wrapping the entire retry execution. This guarantees that the circuit breaker records the final outcome of the retry cycle rather than individual transient network glitches. If a request fails on attempt 1 but succeeds on attempt 2, the breaker records a success. The breaker only registers a failure and trips open if all configured retry attempts fail, preventing premature circuit trips on recoverable hiccups.
 
+### Backoff Signals on Rejection
+Every 503 the gateway generates itself carries a `Retry-After` header, but the value is derived from what actually knows when the rejection will end. Load shedding sends a fixed one second because its control loop re-evaluates continuously. The circuit breaker sends the remainder of its current cooldown, rounded up to whole seconds, because that is the exact point at which a half-open probe will be admitted. A client that retries earlier than that is refused again, so the header is the difference between a backoff and a thundering herd. Errors that carry no such knowledge, such as a 502 for an unreachable upstream, deliberately send no `Retry-After` at all rather than inventing one.
+
 ### Cache After Rate Limiting
 The caching middleware is deliberately positioned after the rate limiting layer. This ensures that client rate limits and quotas apply uniformly across all incoming traffic, preventing malicious or runaway clients from overwhelming gateway memory bandwidth with rapid cache lookups. Once allowed, cache hits return immediately in under 300 nanoseconds, bypassing the admission queue, connection pools, and backend servers.
 

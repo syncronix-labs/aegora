@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -427,6 +428,127 @@ func TestGateway_CircuitBreakerForcedOpenReturns503(t *testing.T) {
 	}
 	if parsed["error"] != "service unavailable" {
 		t.Fatalf("expected error 'service unavailable', got %q", parsed["error"])
+	}
+}
+
+func TestGateway_CircuitBreakerOpenSendsRetryAfter(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	cooldown := time.Minute
+	routes := []RouteConfig{
+		{
+			Name:       "cb-route",
+			PathPrefix: "/cb",
+			Targets:    []string{backend.URL},
+		},
+	}
+
+	rc := ReliabilityConfig{
+		BreakerFailureThreshold: 2,
+		BreakerCooldown:         cooldown,
+		BreakerHalfOpenProbes:   1,
+		BreakerSuccessThreshold: 1,
+		RetryEnabled:            false,
+	}
+
+	gw, err := NewGateway(routes, rc)
+	if err != nil {
+		t.Fatalf("NewGateway: %v", err)
+	}
+
+	for _, entry := range gw.routes {
+		entry.breaker.RecordFailure()
+		entry.breaker.RecordFailure()
+	}
+
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/cb/test", nil))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 Service Unavailable, got %d", rec.Code)
+	}
+
+	header := rec.Header().Get("Retry-After")
+	if header == "" {
+		t.Fatal("expected a Retry-After header while the breaker is open")
+	}
+	seconds, err := strconv.Atoi(header)
+	if err != nil {
+		t.Fatalf("Retry-After is not a whole number of seconds: %q", header)
+	}
+	if seconds < 1 {
+		t.Fatalf("expected at least one second of backoff, got %d", seconds)
+	}
+	if maxSeconds := int(cooldown.Seconds()); seconds > maxSeconds {
+		t.Fatalf("Retry-After of %ds exceeds the %ds cooldown", seconds, maxSeconds)
+	}
+}
+
+func TestGateway_RetryAfterOnlyAccompaniesAnOpenBreaker(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	routes := []RouteConfig{
+		{
+			Name:       "ok-route",
+			PathPrefix: "/ok",
+			Targets:    []string{backend.URL},
+		},
+	}
+
+	gw, err := NewGateway(routes, defaultTestReliabilityConfig())
+	if err != nil {
+		t.Fatalf("NewGateway: %v", err)
+	}
+
+	proxied := httptest.NewRecorder()
+	gw.ServeHTTP(proxied, httptest.NewRequest(http.MethodGet, "/ok/thing", nil))
+	if proxied.Code != http.StatusOK {
+		t.Fatalf("expected 200 from the backend, got %d", proxied.Code)
+	}
+	if got := proxied.Header().Get("Retry-After"); got != "" {
+		t.Fatalf("a proxied response must not carry Retry-After, got %q", got)
+	}
+
+	unmatched := httptest.NewRecorder()
+	gw.ServeHTTP(unmatched, httptest.NewRequest(http.MethodGet, "/nope", nil))
+	if unmatched.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", unmatched.Code)
+	}
+	if got := unmatched.Header().Get("Retry-After"); got != "" {
+		t.Fatalf("a 404 must not carry Retry-After, got %q", got)
+	}
+
+	// A route whose only upstream is gone answers 502: nothing knows when it
+	// will come back, so there is no honest backoff to advertise.
+	gone := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	goneURL := gone.URL
+	gone.Close()
+
+	deadRoutes := []RouteConfig{
+		{
+			Name:       "dead-route",
+			PathPrefix: "/dead",
+			Targets:    []string{goneURL},
+		},
+	}
+	dead, err := NewGateway(deadRoutes, defaultTestReliabilityConfig())
+	if err != nil {
+		t.Fatalf("NewGateway: %v", err)
+	}
+
+	badGateway := httptest.NewRecorder()
+	dead.ServeHTTP(badGateway, httptest.NewRequest(http.MethodGet, "/dead/thing", nil))
+	if badGateway.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 Bad Gateway, got %d", badGateway.Code)
+	}
+	if got := badGateway.Header().Get("Retry-After"); got != "" {
+		t.Fatalf("a 502 must not carry Retry-After, got %q", got)
 	}
 }
 
