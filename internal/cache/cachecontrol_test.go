@@ -72,7 +72,7 @@ func TestEffectiveTTL(t *testing.T) {
 func TestCacheMiddleware_CapsLifetimeAtBackendMaxAge(t *testing.T) {
 	store := newRecordingStore()
 
-	backend := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=5")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("data"))
@@ -94,7 +94,7 @@ func TestCacheMiddleware_CapsLifetimeAtBackendMaxAge(t *testing.T) {
 func TestCacheMiddleware_ALongerMaxAgeDoesNotExtendTheConfiguredTTL(t *testing.T) {
 	store := newRecordingStore()
 
-	backend := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Cache-Control", "max-age=86400")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("data"))
@@ -117,7 +117,7 @@ func TestCacheMiddleware_MaxAgeZeroIsServedButNotStored(t *testing.T) {
 	store := newRecordingStore()
 	var callCount int
 
-	backend := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		callCount++
 		w.Header().Set("Cache-Control", "max-age=0")
 		w.WriteHeader(http.StatusOK)
@@ -153,7 +153,7 @@ func TestCacheMiddleware_ExpiresWhenTheBackendMaxAgeElapses(t *testing.T) {
 	store := NewCache(10, 1024)
 	var callCount int
 
-	backend := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		callCount++
 		w.Header().Set("Cache-Control", "max-age=1")
 		w.WriteHeader(http.StatusOK)
