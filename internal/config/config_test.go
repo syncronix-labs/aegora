@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -156,6 +157,20 @@ func TestValidate_MutatedNegativeCases(t *testing.T) {
 			wantFieldInErr: "server.max_request_body_bytes",
 		},
 		{
+			name: "tls cert without key",
+			mutate: func(c *config.Config) {
+				c.Server.TLSCertFile = "server.crt"
+			},
+			wantFieldInErr: "server.tls_key_file",
+		},
+		{
+			name: "tls key without cert",
+			mutate: func(c *config.Config) {
+				c.Server.TLSKeyFile = "server.key"
+			},
+			wantFieldInErr: "server.tls_cert_file",
+		},
+		{
 			name: "zero routes configured",
 			mutate: func(c *config.Config) {
 				c.Routes = nil
@@ -262,6 +277,40 @@ func TestLoad_MissingFile(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "config: read file") {
 		t.Fatalf("expected error to mention reading file, got: %v", err)
+	}
+}
+
+func TestLoad_TLSServerYAML(t *testing.T) {
+	const raw = `
+server:
+  addr: "127.0.0.1:8443"
+  read_timeout: "15s"
+  write_timeout: "30s"
+  idle_timeout: "60s"
+  tls_cert_file: "/etc/aegora/server.crt"
+  tls_key_file: "/etc/aegora/server.key"
+routes:
+  - name: api
+    path_prefix: /api
+    targets:
+      - "http://127.0.0.1:8081"
+observability:
+  log_level: info
+`
+	path := filepath.Join(t.TempDir(), "tls.yaml")
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("config.Load() unexpected error: %v", err)
+	}
+	if cfg.Server.TLSCertFile != "/etc/aegora/server.crt" {
+		t.Fatalf("TLSCertFile = %q", cfg.Server.TLSCertFile)
+	}
+	if cfg.Server.TLSKeyFile != "/etc/aegora/server.key" {
+		t.Fatalf("TLSKeyFile = %q", cfg.Server.TLSKeyFile)
 	}
 }
 
