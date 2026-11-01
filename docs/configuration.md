@@ -86,6 +86,10 @@ Protects backends against abusive clients and sudden volume spikes.
 | `refill_per_second` | float64 | none (required for token_bucket) | Yes | Token refill rate per second for token bucket limiters. Must be positive. |
 | `key` | string | `"ip"` | Yes | Partition key for rate limit buckets: `"ip"` (client remote IP) or `"api_key"` (`X-API-Key` or `Authorization` header). |
 
+### Redis-backed limiters
+
+The `internal/ratelimit` package also ships Redis-backed implementations of both algorithms for deployments that must share limit state across gateway replicas: `ratelimit.NewRedisLimiter` (sliding window) and `ratelimit.NewRedisTokenBucket` (token bucket). Both execute one atomic Lua script per request, derive the clock from Redis `TIME` so replica clock skew cannot widen a window or skip a refill, share the `aegora:rl` key prefix, and fail open when Redis is unreachable. These are library types; the `rate_limit` block above currently selects the in-memory implementations.
+
 ### Per-Route Overrides
 
 Any route can define its own `rate_limit` block with the same fields as the global block. Only the fields you set override the global values; every other field is inherited.
