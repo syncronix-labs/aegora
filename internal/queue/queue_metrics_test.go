@@ -22,7 +22,7 @@ func TestQueue_DroppedCounterEndToEnd(t *testing.T) {
 	q := NewQueue(1, 2, cd, nil, nil)
 	q.running = true // tickets stay queued without the background dispatcher
 
-	handler := m.Middleware(nil)(q.Admit(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := m.Middleware(nil)(q.Admit(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("dropped request should not reach the downstream handler")
 	})))
 

@@ -14,7 +14,7 @@ func TestMiddleware_CountsShedDrops(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := New(reg)
 
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		MarkShed(w.Header())
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(`{"error":"server overloaded"}`))
@@ -35,7 +35,7 @@ func TestMiddleware_CountsQueueDrops(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := New(reg)
 
-	handler := m.Middleware(nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := m.Middleware(nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		MarkQueueDropped(w.Header())
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
@@ -59,12 +59,12 @@ func TestMiddleware_UsesRouteLabelForDropCounters(t *testing.T) {
 	m := New(reg)
 
 	router := &stubRouter{
-		matchFn: func(r *http.Request) *proxy.RouteConfig {
+		matchFn: func(_ *http.Request) *proxy.RouteConfig {
 			return &proxy.RouteConfig{Name: "orders"}
 		},
 	}
 
-	handler := m.Middleware(router)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := m.Middleware(router)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		MarkShed(w.Header())
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
@@ -82,7 +82,7 @@ func TestMiddleware_NoMarkerDoesNotTouchDropCounters(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := New(reg)
 
-	handler := m.Middleware(nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := m.Middleware(nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api", nil))

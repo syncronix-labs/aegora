@@ -24,7 +24,7 @@ func TestShedding_ShedCounterEndToEnd(t *testing.T) {
 	c.priorityFloor = 0.9
 	c.mu.Unlock()
 
-	handler := m.Middleware(nil)(c.Admit(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := m.Middleware(nil)(c.Admit(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("shed request should not reach the downstream handler")
 	})))
 
